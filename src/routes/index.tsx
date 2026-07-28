@@ -1,12 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { Plus, Trash2, Flame } from "lucide-react";
+import { Plus, Trash2, Flame, GripVertical } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { useHabits, useTasks } from "@/lib/store";
+import { useHabits, useTasks, taskOrder } from "@/lib/store";
+import { useDragReorder } from "@/lib/use-drag-reorder";
 import { todayISO, formatLong } from "@/lib/date-utils";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -36,16 +38,18 @@ function TodayPage() {
 }
 
 function TodayTasks({ today }: { today: string }) {
-  const { tasks, add, toggle, remove } = useTasks();
+  const { tasks, add, toggle, remove, reorderSubset } = useTasks();
   const [title, setTitle] = useState("");
 
   const todays = useMemo(
     () =>
       tasks
         .filter((t) => t.dueDate === today)
-        .sort((a, b) => Number(a.completed) - Number(b.completed) || b.createdAt - a.createdAt),
+        .sort((a, b) => taskOrder(a) - taskOrder(b)),
     [tasks, today],
   );
+
+  const { getRowProps } = useDragReorder(todays, reorderSubset);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,34 +81,43 @@ function TodayTasks({ today }: { today: string }) {
         </p>
       ) : (
         <ul className="space-y-1">
-          {todays.map((t) => (
-            <li
-              key={t.id}
-              className="group flex items-center gap-3 rounded-md px-2 py-2 hover:bg-accent/40"
-            >
-              <Checkbox
-                checked={t.completed}
-                onCheckedChange={() => toggle(t.id)}
-                id={`t-${t.id}`}
-              />
-              <label
-                htmlFor={`t-${t.id}`}
-                className={
-                  "flex-1 min-w-0 text-sm cursor-pointer " +
-                  (t.completed ? "line-through text-muted-foreground" : "")
-                }
+          {todays.map((t) => {
+            const rp = getRowProps(t.id);
+            return (
+              <li
+                key={t.id}
+                {...rp}
+                className={cn(
+                  "group flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent/40 transition",
+                  rp["data-dragging"] && "opacity-40",
+                  rp["data-over"] && "ring-1 ring-primary/60",
+                )}
               >
-                {t.title}
-              </label>
-              <button
-                onClick={() => remove(t.id)}
-                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
-                aria-label="Delete task"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </li>
-          ))}
+                <GripVertical className="h-4 w-4 text-muted-foreground/40 cursor-grab active:cursor-grabbing shrink-0" />
+                <Checkbox
+                  checked={t.completed}
+                  onCheckedChange={() => toggle(t.id)}
+                  id={`t-${t.id}`}
+                />
+                <label
+                  htmlFor={`t-${t.id}`}
+                  className={
+                    "flex-1 min-w-0 text-sm cursor-pointer " +
+                    (t.completed ? "line-through text-muted-foreground" : "")
+                  }
+                >
+                  {t.title}
+                </label>
+                <button
+                  onClick={() => remove(t.id)}
+                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
+                  aria-label="Delete task"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
@@ -147,9 +160,6 @@ function HabitTracker({ today }: { today: string }) {
         <ul className="space-y-1">
           {habits.map((h) => {
             const done = h.lastCompleted === today;
-            // Effective streak: if the last completion is neither today nor
-            // yesterday, the streak has been broken — show 0 until the user
-            // completes again (which resets it to 1 via toggleToday).
             const yest = new Date(today);
             yest.setDate(yest.getDate() - 1);
             const y = yest.toISOString().slice(0, 10);

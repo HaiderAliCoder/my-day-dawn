@@ -18,7 +18,10 @@ export interface Task {
   completed: boolean;
   createdIn: TaskSource;
   createdAt: number;
+  order?: number; // shared ordering across all views
 }
+
+export const taskOrder = (t: Task) => t.order ?? t.createdAt;
 
 export interface Habit {
   id: string;
@@ -144,18 +147,27 @@ export function useTasks() {
   return {
     tasks: state.tasks,
     add: (partial: Partial<Task> & { title: string; createdIn: TaskSource }) =>
-      setState((s) => ({
-        ...s,
-        tasks: [
-          ...s.tasks,
-          {
-            id: uid(),
-            completed: false,
-            createdAt: Date.now(),
-            ...partial,
-          } as Task,
-        ],
-      })),
+      setState((s) => {
+        const now = Date.now();
+        // Place new tasks at the end of the global order.
+        const maxOrder = s.tasks.reduce(
+          (m, t) => Math.max(m, taskOrder(t)),
+          0,
+        );
+        return {
+          ...s,
+          tasks: [
+            ...s.tasks,
+            {
+              id: uid(),
+              completed: false,
+              createdAt: now,
+              order: maxOrder + 1,
+              ...partial,
+            } as Task,
+          ],
+        };
+      }),
     update: (id: string, patch: Partial<Task>) =>
       setState((s) => ({
         ...s,
@@ -170,6 +182,32 @@ export function useTasks() {
           t.id === id ? { ...t, completed: !t.completed } : t,
         ),
       })),
+    /**
+     * Reorder a subset of tasks. The order slots occupied by the given
+     * ids are redistributed in the new sequence, so relative position
+     * against tasks outside the subset is preserved everywhere.
+     */
+    reorderSubset: (idsInNewOrder: string[]) =>
+      setState((s) => {
+        const subset = idsInNewOrder
+          .map((id) => s.tasks.find((t) => t.id === id))
+          .filter((t): t is Task => Boolean(t));
+        if (subset.length < 2) return s;
+        const slots = subset
+          .map((t) => taskOrder(t))
+          .slice()
+          .sort((a, b) => a - b);
+        const assigned = new Map<string, number>();
+        idsInNewOrder.forEach((id, i) => {
+          if (i < slots.length) assigned.set(id, slots[i]);
+        });
+        return {
+          ...s,
+          tasks: s.tasks.map((t) =>
+            assigned.has(t.id) ? { ...t, order: assigned.get(t.id)! } : t,
+          ),
+        };
+      }),
   };
 }
 
