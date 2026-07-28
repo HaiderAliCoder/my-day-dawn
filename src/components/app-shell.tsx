@@ -12,14 +12,21 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const NAV = [
+type NavItem = {
+  to: string;
+  label: string;
+  icon: typeof Sun;
+  exact?: boolean;
+};
+
+const NAV: NavItem[] = [
   { to: "/", label: "Today", icon: Sun, exact: true },
   { to: "/planner", label: "Planner", icon: Notebook },
   { to: "/calendar", label: "Calendar", icon: CalendarDays },
   { to: "/tasks", label: "Tasks", icon: CheckSquare },
   { to: "/clocks", label: "World Clocks", icon: Globe2 },
   { to: "/goals", label: "Long-Term Goals", icon: Target },
-] as const;
+];
 
 export function AppShell({ children }: { children?: ReactNode }) {
   const [open, setOpen] = useState(false);
