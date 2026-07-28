@@ -18,7 +18,10 @@ export interface Task {
   completed: boolean;
   createdIn: TaskSource;
   createdAt: number;
+  order?: number; // shared ordering across all views
 }
+
+export const taskOrder = (t: Task) => t.order ?? t.createdAt;
 
 export interface Habit {
   id: string;
