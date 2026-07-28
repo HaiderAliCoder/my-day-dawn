@@ -1,13 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, GripVertical, Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { usePlannerNotes, useTasks, type TaskSource } from "@/lib/store";
+import { taskOrder, usePlannerNotes, useTasks, type TaskSource } from "@/lib/store";
+import { useDragReorder } from "@/lib/use-drag-reorder";
 import {
   MONTHS,
   monthKey,
@@ -17,6 +18,7 @@ import {
   yearKey,
   formatLong,
 } from "@/lib/date-utils";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/planner")({
   head: () => ({
@@ -114,15 +116,17 @@ function DailyView() {
 }
 
 function DayTaskList({ date, source }: { date: string; source: TaskSource }) {
-  const { tasks, add, toggle, remove } = useTasks();
+  const { tasks, add, toggle, remove, reorderSubset } = useTasks();
   const [title, setTitle] = useState("");
   const list = useMemo(
     () =>
       tasks
         .filter((t) => t.dueDate === date)
-        .sort((a, b) => Number(a.completed) - Number(b.completed)),
+        .sort((a, b) => taskOrder(a) - taskOrder(b)),
     [tasks, date],
   );
+  const { getRowProps } = useDragReorder(list, reorderSubset);
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const t = title.trim();
@@ -150,29 +154,38 @@ function DayTaskList({ date, source }: { date: string; source: TaskSource }) {
         <p className="text-sm text-muted-foreground py-6 text-center">No tasks yet.</p>
       ) : (
         <ul className="space-y-1">
-          {list.map((t) => (
-            <li
-              key={t.id}
-              className="group flex items-center gap-3 rounded-md px-2 py-2 hover:bg-accent/40"
-            >
-              <Checkbox checked={t.completed} onCheckedChange={() => toggle(t.id)} />
-              <span
-                className={
-                  "flex-1 min-w-0 text-sm " +
-                  (t.completed ? "line-through text-muted-foreground" : "")
-                }
+          {list.map((t) => {
+            const rp = getRowProps(t.id);
+            return (
+              <li
+                key={t.id}
+                {...rp}
+                className={cn(
+                  "group flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent/40 transition",
+                  rp["data-dragging"] && "opacity-40",
+                  rp["data-over"] && "ring-1 ring-primary/60",
+                )}
               >
-                {t.title}
-              </span>
-              <button
-                onClick={() => remove(t.id)}
-                className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
-                aria-label="Delete"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </li>
-          ))}
+                <GripVertical className="h-4 w-4 text-muted-foreground/40 cursor-grab active:cursor-grabbing shrink-0" />
+                <Checkbox checked={t.completed} onCheckedChange={() => toggle(t.id)} />
+                <span
+                  className={
+                    "flex-1 min-w-0 text-sm " +
+                    (t.completed ? "line-through text-muted-foreground" : "")
+                  }
+                >
+                  {t.title}
+                </span>
+                <button
+                  onClick={() => remove(t.id)}
+                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
+                  aria-label="Delete"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
