@@ -147,6 +147,14 @@ function HabitTracker({ today }: { today: string }) {
         <ul className="space-y-1">
           {habits.map((h) => {
             const done = h.lastCompleted === today;
+            // Effective streak: if the last completion is neither today nor
+            // yesterday, the streak has been broken — show 0 until the user
+            // completes again (which resets it to 1 via toggleToday).
+            const yest = new Date(today);
+            yest.setDate(yest.getDate() - 1);
+            const y = yest.toISOString().slice(0, 10);
+            const streak =
+              h.lastCompleted === today || h.lastCompleted === y ? h.streak : 0;
             return (
               <li
                 key={h.id}
@@ -166,9 +174,15 @@ function HabitTracker({ today }: { today: string }) {
                 >
                   {h.name}
                 </label>
-                <span className="flex items-center gap-1 text-xs text-muted-foreground shrink-0">
+                <span
+                  className={
+                    "flex items-center gap-1 text-xs shrink-0 " +
+                    (streak > 0 ? "text-primary" : "text-muted-foreground")
+                  }
+                  title={`${streak}-day streak`}
+                >
                   <Flame className="h-3 w-3" />
-                  {h.streak}
+                  {streak}
                 </span>
                 <button
                   onClick={() => remove(h.id)}
