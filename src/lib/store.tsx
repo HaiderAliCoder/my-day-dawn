@@ -1,12 +1,10 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/lib/auth";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export type TaskSource = "today" | "daily" | "monthly" | "yearly" | "calendar";
 
@@ -23,12 +21,18 @@ export interface Task {
 
 export const taskOrder = (t: Task) => t.order ?? t.createdAt;
 
+export interface HabitItem {
+  id: string;
+  label: string;
+  order: number;
+}
+
 export interface Habit {
   id: string;
   name: string;
-  streak: number;
-  lastCompleted?: string; // YYYY-MM-DD
-  history: string[]; // YYYY-MM-DD, unsorted set of completed days
+  items: HabitItem[];
+  history: string[]; // YYYY-MM-DD, dates the habit itself was marked done
+  itemHistory: Record<string, string[]>; // itemId -> completed dates
 }
 
 /**
@@ -83,302 +87,665 @@ export interface PlannerNotes {
   yearly: Record<string, string>; // YYYY
 }
 
-interface State {
-  tasks: Task[];
-  habits: Habit[];
-  plannerNotes: PlannerNotes;
-  goals: Goal[];
-  goalSections: GoalSection[];
-  clocks: Clock[];
+// ---------------------------------------------------------------------------
+// Tasks
+// ---------------------------------------------------------------------------
+
+interface TaskRow {
+  id: string;
+  title: string;
+  description: string | null;
+  due_date: string | null;
+  completed: boolean;
+  created_in: TaskSource;
+  created_at: string;
+  sort_order: number;
 }
 
-const KEY = "productivity-dashboard-v1";
-
-const DEFAULT_STATE: State = {
-  tasks: [],
-  habits: [],
-  plannerNotes: { daily: {}, monthly: {}, yearly: {} },
-  goals: [],
-  goalSections: [
-    { id: "s5", label: "Next 5 Years", order: 0 },
-    { id: "s10", label: "Next 10 Years", order: 1 },
-    { id: "s50", label: "Next 50 Years", order: 2 },
-  ],
-  clocks: [
-    { id: "c1", timezone: "America/New_York", city: "New York", country: "United States" },
-    { id: "c2", timezone: "Europe/London", city: "London", country: "United Kingdom" },
-    { id: "c3", timezone: "Asia/Tokyo", city: "Tokyo", country: "Japan" },
-  ],
-};
-
-function loadState(): State {
-  if (typeof window === "undefined") return DEFAULT_STATE;
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    if (!raw) return DEFAULT_STATE;
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_STATE, ...parsed };
-  } catch {
-    return DEFAULT_STATE;
-  }
+function rowToTask(row: TaskRow): Task {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description ?? undefined,
+    dueDate: row.due_date ?? undefined,
+    completed: row.completed,
+    createdIn: row.created_in,
+    createdAt: new Date(row.created_at).getTime(),
+    order: row.sort_order,
+  };
 }
-
-type Ctx = {
-  state: State;
-  setState: (updater: (s: State) => State) => void;
-};
-
-const StoreContext = createContext<Ctx | null>(null);
-
-export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, setInner] = useState<State>(DEFAULT_STATE);
-  const [hydrated, setHydrated] = useState(false);
-
-  useEffect(() => {
-    setInner(loadState());
-    setHydrated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    try {
-      window.localStorage.setItem(KEY, JSON.stringify(state));
-    } catch {
-      // ignore
-    }
-  }, [state, hydrated]);
-
-  const setState = useCallback((updater: (s: State) => State) => {
-    setInner((prev) => updater(prev));
-  }, []);
-
-  const value = useMemo(() => ({ state, setState }), [state, setState]);
-  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
-}
-
-export function useStore() {
-  const ctx = useContext(StoreContext);
-  if (!ctx) throw new Error("useStore must be used within StoreProvider");
-  return ctx;
-}
-
-// helpers
-const uid = () => Math.random().toString(36).slice(2, 10);
 
 export function useTasks() {
-  const { state, setState } = useStore();
-  return {
-    tasks: state.tasks,
-    add: (partial: Partial<Task> & { title: string; createdIn: TaskSource }) =>
-      setState((s) => {
-        const now = Date.now();
-        // Place new tasks at the end of the global order.
-        const maxOrder = s.tasks.reduce(
-          (m, t) => Math.max(m, taskOrder(t)),
-          0,
-        );
-        return {
-          ...s,
-          tasks: [
-            ...s.tasks,
-            {
-              id: uid(),
-              completed: false,
-              createdAt: now,
-              order: maxOrder + 1,
-              ...partial,
-            } as Task,
-          ],
-        };
-      }),
-    update: (id: string, patch: Partial<Task>) =>
-      setState((s) => ({
-        ...s,
-        tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)),
-      })),
-    remove: (id: string) =>
-      setState((s) => ({ ...s, tasks: s.tasks.filter((t) => t.id !== id) })),
-    toggle: (id: string) =>
-      setState((s) => ({
-        ...s,
-        tasks: s.tasks.map((t) =>
-          t.id === id ? { ...t, completed: !t.completed } : t,
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const queryKey = ["tasks", userId] as const;
+
+  const query = useQuery({
+    queryKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<Task[]> => {
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("*")
+        .order("sort_order", { ascending: true });
+      if (error) throw error;
+      return (data as TaskRow[]).map(rowToTask);
+    },
+  });
+
+  const tasks = query.data ?? [];
+
+  const setTasks = (updater: (tasks: Task[]) => Task[]) => {
+    queryClient.setQueryData<Task[]>(queryKey, (old) => updater(old ?? []));
+  };
+
+  const addMutation = useMutation({
+    mutationFn: async (partial: Partial<Task> & { title: string; createdIn: TaskSource }) => {
+      const maxOrder = tasks.reduce((m, t) => Math.max(m, taskOrder(t)), 0);
+      const { data, error } = await supabase
+        .from("tasks")
+        .insert({
+          user_id: userId,
+          title: partial.title,
+          description: partial.description ?? null,
+          due_date: partial.dueDate ?? null,
+          created_in: partial.createdIn,
+          completed: partial.completed ?? false,
+          sort_order: maxOrder + 1,
+        })
+        .select("*")
+        .single();
+      if (error) throw error;
+      return rowToTask(data as TaskRow);
+    },
+    onSuccess: (task) => setTasks((ts) => [...ts, task]),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: Partial<Task> }) => {
+      const { error } = await supabase
+        .from("tasks")
+        .update({
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.description !== undefined ? { description: patch.description ?? null } : {}),
+          ...(patch.dueDate !== undefined ? { due_date: patch.dueDate ?? null } : {}),
+          ...(patch.completed !== undefined ? { completed: patch.completed } : {}),
+          ...(patch.order !== undefined ? { sort_order: patch.order } : {}),
+        })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async ({ id, patch }) => {
+      setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+    },
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("tasks").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) => setTasks((ts) => ts.filter((t) => t.id !== id)),
+  });
+
+  const reorderMutation = useMutation({
+    mutationFn: async (assignments: { id: string; order: number }[]) => {
+      await Promise.all(
+        assignments.map(({ id, order }) =>
+          supabase.from("tasks").update({ sort_order: order }).eq("id", id),
         ),
-      })),
+      );
+    },
+    onMutate: async (assignments) => {
+      const map = new Map(assignments.map((a) => [a.id, a.order]));
+      setTasks((ts) => ts.map((t) => (map.has(t.id) ? { ...t, order: map.get(t.id) } : t)));
+    },
+  });
+
+  return {
+    tasks,
+    add: (partial: Partial<Task> & { title: string; createdIn: TaskSource }) =>
+      addMutation.mutate(partial),
+    update: (id: string, patch: Partial<Task>) => updateMutation.mutate({ id, patch }),
+    remove: (id: string) => removeMutation.mutate(id),
+    toggle: (id: string) => {
+      const t = tasks.find((x) => x.id === id);
+      if (!t) return;
+      updateMutation.mutate({ id, patch: { completed: !t.completed } });
+    },
     /**
      * Reorder a subset of tasks. The order slots occupied by the given
      * ids are redistributed in the new sequence, so relative position
      * against tasks outside the subset is preserved everywhere.
      */
-    reorderSubset: (idsInNewOrder: string[]) =>
-      setState((s) => {
-        const subset = idsInNewOrder
-          .map((id) => s.tasks.find((t) => t.id === id))
-          .filter((t): t is Task => Boolean(t));
-        if (subset.length < 2) return s;
-        const slots = subset
-          .map((t) => taskOrder(t))
-          .slice()
-          .sort((a, b) => a - b);
-        const assigned = new Map<string, number>();
-        idsInNewOrder.forEach((id, i) => {
-          if (i < slots.length) assigned.set(id, slots[i]);
-        });
-        return {
-          ...s,
-          tasks: s.tasks.map((t) =>
-            assigned.has(t.id) ? { ...t, order: assigned.get(t.id)! } : t,
-          ),
-        };
-      }),
+    reorderSubset: (idsInNewOrder: string[]) => {
+      const subset = idsInNewOrder
+        .map((id) => tasks.find((t) => t.id === id))
+        .filter((t): t is Task => Boolean(t));
+      if (subset.length < 2) return;
+      const slots = subset
+        .map((t) => taskOrder(t))
+        .slice()
+        .sort((a, b) => a - b);
+      const assignments = idsInNewOrder
+        .map((id, i) => (i < slots.length ? { id, order: slots[i] } : null))
+        .filter((a): a is { id: string; order: number } => a !== null);
+      reorderMutation.mutate(assignments);
+    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Habits (with nested sub-items, e.g. individual prayers within a "Prayer"
+// habit) — each habit and each item has its own daily completion history.
+// ---------------------------------------------------------------------------
+
+interface HabitRow {
+  id: string;
+  name: string;
+}
+interface HabitItemRow {
+  id: string;
+  habit_id: string;
+  label: string;
+  sort_order: number;
+}
+interface HabitCompletionRow {
+  habit_id: string;
+  completed_date: string;
+}
+interface HabitItemCompletionRow {
+  item_id: string;
+  habit_id: string;
+  completed_date: string;
+}
+
+async function fetchHabits(): Promise<Habit[]> {
+  const [habitsRes, itemsRes, completionsRes, itemCompletionsRes] = await Promise.all([
+    supabase.from("habits").select("id, name").order("created_at", { ascending: true }),
+    supabase
+      .from("habit_items")
+      .select("id, habit_id, label, sort_order")
+      .order("sort_order", { ascending: true }),
+    supabase.from("habit_completions").select("habit_id, completed_date"),
+    supabase.from("habit_item_completions").select("item_id, habit_id, completed_date"),
+  ]);
+  if (habitsRes.error) throw habitsRes.error;
+  if (itemsRes.error) throw itemsRes.error;
+  if (completionsRes.error) throw completionsRes.error;
+  if (itemCompletionsRes.error) throw itemCompletionsRes.error;
+
+  const habitRows = habitsRes.data as HabitRow[];
+  const itemRows = itemsRes.data as HabitItemRow[];
+  const completionRows = completionsRes.data as HabitCompletionRow[];
+  const itemCompletionRows = itemCompletionsRes.data as HabitItemCompletionRow[];
+
+  return habitRows.map((h) => {
+    const items: HabitItem[] = itemRows
+      .filter((i) => i.habit_id === h.id)
+      .map((i) => ({ id: i.id, label: i.label, order: i.sort_order }));
+    const history = completionRows
+      .filter((c) => c.habit_id === h.id)
+      .map((c) => c.completed_date)
+      .sort();
+    const itemHistory: Record<string, string[]> = {};
+    for (const item of items) {
+      itemHistory[item.id] = itemCompletionRows
+        .filter((c) => c.item_id === item.id)
+        .map((c) => c.completed_date)
+        .sort();
+    }
+    return { id: h.id, name: h.name, items, history, itemHistory };
+  });
 }
 
 export function useHabits() {
-  const { state, setState } = useStore();
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const queryKey = ["habits", userId] as const;
+
+  const query = useQuery({
+    queryKey,
+    enabled: !!userId,
+    queryFn: fetchHabits,
+  });
+
+  const habits = query.data ?? [];
+
+  const setHabits = (updater: (habits: Habit[]) => Habit[]) => {
+    queryClient.setQueryData<Habit[]>(queryKey, (old) => updater(old ?? []));
+  };
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey });
+
+  const addMutation = useMutation({
+    mutationFn: async (name: string) => {
+      const { error } = await supabase.from("habits").insert({ user_id: userId, name });
+      if (error) throw error;
+    },
+    onSuccess: invalidate,
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("habits").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) => setHabits((hs) => hs.filter((h) => h.id !== id)),
+  });
+
+  const toggleDateMutation = useMutation({
+    mutationFn: async ({
+      habitId,
+      date,
+      done,
+    }: {
+      habitId: string;
+      date: string;
+      done: boolean;
+    }) => {
+      if (done) {
+        const { error } = await supabase
+          .from("habit_completions")
+          .delete()
+          .eq("habit_id", habitId)
+          .eq("completed_date", date);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("habit_completions")
+          .insert({ habit_id: habitId, user_id: userId, completed_date: date });
+        if (error) throw error;
+      }
+    },
+    onMutate: async ({ habitId, date, done }) =>
+      setHabits((hs) =>
+        hs.map((h) =>
+          h.id !== habitId
+            ? h
+            : {
+                ...h,
+                history: done ? h.history.filter((d) => d !== date) : [...h.history, date].sort(),
+              },
+        ),
+      ),
+  });
+
+  const addItemMutation = useMutation({
+    mutationFn: async ({ habitId, label }: { habitId: string; label: string }) => {
+      const habit = habits.find((h) => h.id === habitId);
+      const maxOrder = habit?.items.reduce((m, i) => Math.max(m, i.order), -1) ?? -1;
+      const { error } = await supabase
+        .from("habit_items")
+        .insert({ habit_id: habitId, user_id: userId, label, sort_order: maxOrder + 1 });
+      if (error) throw error;
+    },
+    onSuccess: invalidate,
+  });
+
+  const removeItemMutation = useMutation({
+    mutationFn: async (itemId: string) => {
+      const { error } = await supabase.from("habit_items").delete().eq("id", itemId);
+      if (error) throw error;
+    },
+    onMutate: async (itemId) =>
+      setHabits((hs) => hs.map((h) => ({ ...h, items: h.items.filter((i) => i.id !== itemId) }))),
+  });
+
+  const toggleItemDateMutation = useMutation({
+    mutationFn: async ({
+      itemId,
+      habitId,
+      date,
+      done,
+    }: {
+      itemId: string;
+      habitId: string;
+      date: string;
+      done: boolean;
+    }) => {
+      if (done) {
+        const { error } = await supabase
+          .from("habit_item_completions")
+          .delete()
+          .eq("item_id", itemId)
+          .eq("completed_date", date);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from("habit_item_completions")
+          .insert({ item_id: itemId, habit_id: habitId, user_id: userId, completed_date: date });
+        if (error) throw error;
+      }
+    },
+    onMutate: async ({ itemId, habitId, date, done }) =>
+      setHabits((hs) =>
+        hs.map((h) => {
+          if (h.id !== habitId) return h;
+          const current = h.itemHistory[itemId] ?? [];
+          const next = done ? current.filter((d) => d !== date) : [...current, date].sort();
+          return { ...h, itemHistory: { ...h.itemHistory, [itemId]: next } };
+        }),
+      ),
+  });
+
   return {
-    habits: state.habits,
-    add: (name: string) =>
-      setState((s) => ({
-        ...s,
-        habits: [
-          ...s.habits,
-          { id: uid(), name, streak: 0, history: [] },
-        ],
-      })),
-    remove: (id: string) =>
-      setState((s) => ({ ...s, habits: s.habits.filter((h) => h.id !== id) })),
+    habits,
+    add: (name: string) => addMutation.mutate(name),
+    remove: (id: string) => removeMutation.mutate(id),
     /**
      * Toggle completion for any given day (not just today), so each habit
-     * can have its own calendar of marked days. Streak/lastCompleted are
-     * kept in sync for backward compatibility, but the source of truth is
-     * `history` — use computeStreak() to get the live streak.
+     * can have its own calendar of marked days.
      */
-    toggleDate: (id: string, date: string) =>
-      setState((s) => ({
-        ...s,
-        habits: s.habits.map((h) => {
-          if (h.id !== id) return h;
-          const marked = h.history.includes(date);
-          const history = marked
-            ? h.history.filter((d) => d !== date)
-            : [...h.history, date].sort();
-          const lastCompleted = history.length
-            ? history[history.length - 1]
-            : undefined;
-          return {
-            ...h,
-            history,
-            lastCompleted,
-            streak: computeStreak(history, date),
-          };
-        }),
-      })),
+    toggleDate: (id: string, date: string) => {
+      const habit = habits.find((h) => h.id === id);
+      const done = habit?.history.includes(date) ?? false;
+      toggleDateMutation.mutate({ habitId: id, date, done });
+    },
+    addItem: (habitId: string, label: string) => addItemMutation.mutate({ habitId, label }),
+    removeItem: (itemId: string) => removeItemMutation.mutate(itemId),
+    toggleItemDate: (habitId: string, itemId: string, date: string) => {
+      const habit = habits.find((h) => h.id === habitId);
+      const done = habit?.itemHistory[itemId]?.includes(date) ?? false;
+      toggleItemDateMutation.mutate({ itemId, habitId, date, done });
+    },
   };
 }
 
+// ---------------------------------------------------------------------------
+// Planner notes
+// ---------------------------------------------------------------------------
+
+interface PlannerNoteRow {
+  scope: "daily" | "monthly" | "yearly";
+  period_key: string;
+  content: string;
+}
+
 export function usePlannerNotes() {
-  const { state, setState } = useStore();
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const queryKey = ["planner_notes", userId] as const;
+
+  const query = useQuery({
+    queryKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<PlannerNotes> => {
+      const { data, error } = await supabase
+        .from("planner_notes")
+        .select("scope, period_key, content");
+      if (error) throw error;
+      const notes: PlannerNotes = { daily: {}, monthly: {}, yearly: {} };
+      for (const row of data as PlannerNoteRow[]) {
+        notes[row.scope][row.period_key] = row.content;
+      }
+      return notes;
+    },
+  });
+
+  const notes = query.data ?? { daily: {}, monthly: {}, yearly: {} };
+
+  const setNotes = (updater: (n: PlannerNotes) => PlannerNotes) => {
+    queryClient.setQueryData<PlannerNotes>(queryKey, (old) =>
+      updater(old ?? { daily: {}, monthly: {}, yearly: {} }),
+    );
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async ({
+      scope,
+      periodKey,
+      value,
+    }: {
+      scope: "daily" | "monthly" | "yearly";
+      periodKey: string;
+      value: string;
+    }) => {
+      const { error } = await supabase
+        .from("planner_notes")
+        .upsert(
+          { user_id: userId, scope, period_key: periodKey, content: value },
+          { onConflict: "user_id,scope,period_key" },
+        );
+      if (error) throw error;
+    },
+    onMutate: async ({ scope, periodKey, value }) =>
+      setNotes((n) => ({ ...n, [scope]: { ...n[scope], [periodKey]: value } })),
+  });
+
   return {
-    notes: state.plannerNotes,
+    notes,
     setDaily: (date: string, value: string) =>
-      setState((s) => ({
-        ...s,
-        plannerNotes: {
-          ...s.plannerNotes,
-          daily: { ...s.plannerNotes.daily, [date]: value },
-        },
-      })),
+      saveMutation.mutate({ scope: "daily", periodKey: date, value }),
     setMonthly: (ym: string, value: string) =>
-      setState((s) => ({
-        ...s,
-        plannerNotes: {
-          ...s.plannerNotes,
-          monthly: { ...s.plannerNotes.monthly, [ym]: value },
-        },
-      })),
+      saveMutation.mutate({ scope: "monthly", periodKey: ym, value }),
     setYearly: (y: string, value: string) =>
-      setState((s) => ({
-        ...s,
-        plannerNotes: {
-          ...s.plannerNotes,
-          yearly: { ...s.plannerNotes.yearly, [y]: value },
-        },
-      })),
+      saveMutation.mutate({ scope: "yearly", periodKey: y, value }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Goals
+// ---------------------------------------------------------------------------
+
+interface GoalSectionRow {
+  id: string;
+  label: string;
+  sort_order: number;
+}
+interface GoalRow {
+  id: string;
+  section_id: string;
+  title: string;
+  description: string | null;
+  target_date: string | null;
+  achieved: boolean;
+  sort_order: number;
+}
+
+function rowToSection(row: GoalSectionRow): GoalSection {
+  return { id: row.id, label: row.label, order: row.sort_order };
+}
+function rowToGoal(row: GoalRow): Goal {
+  return {
+    id: row.id,
+    sectionId: row.section_id,
+    title: row.title,
+    description: row.description ?? undefined,
+    targetDate: row.target_date ?? undefined,
+    achieved: row.achieved,
+    order: row.sort_order,
   };
 }
 
 export function useGoals() {
-  const { state, setState } = useStore();
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const sectionsKey = ["goal_sections", userId] as const;
+  const goalsKey = ["goals", userId] as const;
+
+  const sectionsQuery = useQuery({
+    queryKey: sectionsKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<GoalSection[]> => {
+      const { data, error } = await supabase
+        .from("goal_sections")
+        .select("*")
+        .order("sort_order", { ascending: true });
+      if (error) throw error;
+      return (data as GoalSectionRow[]).map(rowToSection);
+    },
+  });
+
+  const goalsQuery = useQuery({
+    queryKey: goalsKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<Goal[]> => {
+      const { data, error } = await supabase
+        .from("goals")
+        .select("*")
+        .order("sort_order", { ascending: true });
+      if (error) throw error;
+      return (data as GoalRow[]).map(rowToGoal);
+    },
+  });
+
+  const sections = sectionsQuery.data ?? [];
+  const goals = goalsQuery.data ?? [];
+
+  const setSections = (updater: (s: GoalSection[]) => GoalSection[]) =>
+    queryClient.setQueryData<GoalSection[]>(sectionsKey, (old) => updater(old ?? []));
+  const setGoals = (updater: (g: Goal[]) => Goal[]) =>
+    queryClient.setQueryData<Goal[]>(goalsKey, (old) => updater(old ?? []));
+
+  const addSectionMutation = useMutation({
+    mutationFn: async (label: string) => {
+      const { error } = await supabase
+        .from("goal_sections")
+        .insert({ user_id: userId, label, sort_order: sections.length });
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: sectionsKey }),
+  });
+
+  const removeSectionMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("goal_sections").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) => {
+      setSections((s) => s.filter((x) => x.id !== id));
+      setGoals((g) => g.filter((x) => x.sectionId !== id));
+    },
+  });
+
+  const addGoalMutation = useMutation({
+    mutationFn: async ({
+      sectionId,
+      partial,
+    }: {
+      sectionId: string;
+      partial: Partial<Goal> & { title: string };
+    }) => {
+      const order = goals.filter((g) => g.sectionId === sectionId).length;
+      const { error } = await supabase.from("goals").insert({
+        user_id: userId,
+        section_id: sectionId,
+        title: partial.title,
+        description: partial.description ?? null,
+        target_date: partial.targetDate ?? null,
+        achieved: false,
+        sort_order: order,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: goalsKey }),
+  });
+
+  const updateGoalMutation = useMutation({
+    mutationFn: async ({ id, patch }: { id: string; patch: Partial<Goal> }) => {
+      const { error } = await supabase
+        .from("goals")
+        .update({
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.description !== undefined ? { description: patch.description ?? null } : {}),
+          ...(patch.targetDate !== undefined ? { target_date: patch.targetDate ?? null } : {}),
+          ...(patch.achieved !== undefined ? { achieved: patch.achieved } : {}),
+          ...(patch.order !== undefined ? { sort_order: patch.order } : {}),
+        })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async ({ id, patch }) =>
+      setGoals((g) => g.map((x) => (x.id === id ? { ...x, ...patch } : x))),
+  });
+
+  const removeGoalMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("goals").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) => setGoals((g) => g.filter((x) => x.id !== id)),
+  });
+
   return {
-    goals: state.goals,
-    sections: state.goalSections,
-    addSection: (label: string) =>
-      setState((s) => ({
-        ...s,
-        goalSections: [
-          ...s.goalSections,
-          { id: uid(), label, order: s.goalSections.length },
-        ],
-      })),
-    removeSection: (id: string) =>
-      setState((s) => ({
-        ...s,
-        goalSections: s.goalSections.filter((x) => x.id !== id),
-        goals: s.goals.filter((g) => g.sectionId !== id),
-      })),
+    goals,
+    sections,
+    addSection: (label: string) => addSectionMutation.mutate(label),
+    removeSection: (id: string) => removeSectionMutation.mutate(id),
     addGoal: (sectionId: string, partial: Partial<Goal> & { title: string }) =>
-      setState((s) => ({
-        ...s,
-        goals: [
-          ...s.goals,
-          {
-            id: uid(),
-            sectionId,
-            title: partial.title,
-            description: partial.description,
-            targetDate: partial.targetDate,
-            achieved: false,
-            order: s.goals.filter((g) => g.sectionId === sectionId).length,
-          },
-        ],
-      })),
-    updateGoal: (id: string, patch: Partial<Goal>) =>
-      setState((s) => ({
-        ...s,
-        goals: s.goals.map((g) => (g.id === id ? { ...g, ...patch } : g)),
-      })),
-    removeGoal: (id: string) =>
-      setState((s) => ({ ...s, goals: s.goals.filter((g) => g.id !== id) })),
-    reorderGoal: (id: string, direction: -1 | 1) =>
-      setState((s) => {
-        const goal = s.goals.find((g) => g.id === id);
-        if (!goal) return s;
-        const siblings = s.goals
-          .filter((g) => g.sectionId === goal.sectionId)
-          .sort((a, b) => a.order - b.order);
-        const idx = siblings.findIndex((g) => g.id === id);
-        const swap = siblings[idx + direction];
-        if (!swap) return s;
-        return {
-          ...s,
-          goals: s.goals.map((g) => {
-            if (g.id === goal.id) return { ...g, order: swap.order };
-            if (g.id === swap.id) return { ...g, order: goal.order };
-            return g;
-          }),
-        };
-      }),
+      addGoalMutation.mutate({ sectionId, partial }),
+    updateGoal: (id: string, patch: Partial<Goal>) => updateGoalMutation.mutate({ id, patch }),
+    removeGoal: (id: string) => removeGoalMutation.mutate(id),
+    reorderGoal: (id: string, direction: -1 | 1) => {
+      const goal = goals.find((g) => g.id === id);
+      if (!goal) return;
+      const siblings = goals
+        .filter((g) => g.sectionId === goal.sectionId)
+        .sort((a, b) => a.order - b.order);
+      const idx = siblings.findIndex((g) => g.id === id);
+      const swap = siblings[idx + direction];
+      if (!swap) return;
+      updateGoalMutation.mutate({ id: goal.id, patch: { order: swap.order } });
+      updateGoalMutation.mutate({ id: swap.id, patch: { order: goal.order } });
+    },
   };
 }
 
+// ---------------------------------------------------------------------------
+// World clocks
+// ---------------------------------------------------------------------------
+
+interface ClockRow {
+  id: string;
+  timezone: string;
+  city: string;
+  country: string;
+}
+
 export function useClocks() {
-  const { state, setState } = useStore();
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const queryKey = ["clocks", userId] as const;
+
+  const query = useQuery({
+    queryKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<Clock[]> => {
+      const { data, error } = await supabase.from("clocks").select("*");
+      if (error) throw error;
+      return data as ClockRow[];
+    },
+  });
+
+  const clocks = query.data ?? [];
+  const setClocks = (updater: (c: Clock[]) => Clock[]) =>
+    queryClient.setQueryData<Clock[]>(queryKey, (old) => updater(old ?? []));
+
+  const addMutation = useMutation({
+    mutationFn: async (c: Omit<Clock, "id">) => {
+      const { error } = await supabase.from("clocks").insert({ user_id: userId, ...c });
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey }),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("clocks").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) => setClocks((c) => c.filter((x) => x.id !== id)),
+  });
+
   return {
-    clocks: state.clocks,
-    add: (c: Omit<Clock, "id">) =>
-      setState((s) => ({ ...s, clocks: [...s.clocks, { ...c, id: uid() }] })),
-    remove: (id: string) =>
-      setState((s) => ({ ...s, clocks: s.clocks.filter((c) => c.id !== id) })),
+    clocks,
+    add: (c: Omit<Clock, "id">) => addMutation.mutate(c),
+    remove: (id: string) => removeMutation.mutate(id),
   };
 }

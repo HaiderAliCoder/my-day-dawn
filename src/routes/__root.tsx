@@ -3,6 +3,8 @@ import {
   Outlet,
   createRootRouteWithContext,
   useRouter,
+  useRouterState,
+  useNavigate,
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
@@ -10,7 +12,7 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { StoreProvider } from "@/lib/store";
+import { AuthProvider, useAuth } from "@/lib/auth";
 import { AppShell } from "@/components/app-shell";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -37,12 +39,8 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   return (
     <div className="dark flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
       <div className="max-w-md text-center">
-        <h1 className="text-xl font-semibold tracking-tight">
-          This page didn't load
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Something went wrong. Try refreshing.
-        </p>
+        <h1 className="text-xl font-semibold tracking-tight">This page didn't load</h1>
+        <p className="mt-2 text-sm text-muted-foreground">Something went wrong. Try refreshing.</p>
         <div className="mt-6">
           <button
             onClick={() => {
@@ -73,8 +71,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { property: "og:title", content: "Focus — Personal Productivity Dashboard" },
       {
         property: "og:description",
-        content:
-          "Plan your day, track habits, manage tasks, and stay on top of long-term goals.",
+        content: "Plan your day, track habits, manage tasks, and stay on top of long-term goals.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -115,12 +112,53 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <StoreProvider>
-        <AppShell>
-          <Outlet />
-        </AppShell>
+      <AuthProvider>
+        <AuthGate />
         <Toaster />
-      </StoreProvider>
+      </AuthProvider>
     </QueryClientProvider>
+  );
+}
+
+function FullScreenSpinner() {
+  return (
+    <div className="dark flex min-h-screen items-center justify-center bg-background text-foreground">
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-foreground" />
+    </div>
+  );
+}
+
+/**
+ * Route guard: redirects signed-out users to /login and signed-in users
+ * away from /login, and only mounts the (Supabase-backed) StoreProvider
+ * once we actually have a session.
+ */
+function AuthGate() {
+  const { session, loading } = useAuth();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (loading) return;
+    if (!session && pathname !== "/login") {
+      navigate({ to: "/login", replace: true });
+    } else if (session && pathname === "/login") {
+      navigate({ to: "/", replace: true });
+    }
+  }, [loading, session, pathname, navigate]);
+
+  if (loading) return <FullScreenSpinner />;
+
+  if (!session) {
+    // Render the login route directly (no sidebar chrome). While the
+    // redirect effect above is about to fire for any other path, show a
+    // spinner instead of flashing protected content.
+    return pathname === "/login" ? <Outlet /> : <FullScreenSpinner />;
+  }
+
+  return (
+    <AppShell>
+      <Outlet />
+    </AppShell>
   );
 }

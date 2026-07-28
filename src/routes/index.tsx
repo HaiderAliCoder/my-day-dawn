@@ -8,6 +8,8 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  ListChecks,
+  X,
 } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
@@ -15,14 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useHabits, useTasks, taskOrder, computeStreak } from "@/lib/store";
 import { useDragReorder } from "@/lib/use-drag-reorder";
-import {
-  todayISO,
-  formatLong,
-  toISO,
-  monthMatrix,
-  MONTHS,
-  DOW_SHORT,
-} from "@/lib/date-utils";
+import { todayISO, formatLong, toISO, monthMatrix, MONTHS, DOW_SHORT } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -57,10 +52,7 @@ function TodayTasks({ today }: { today: string }) {
   const [title, setTitle] = useState("");
 
   const todays = useMemo(
-    () =>
-      tasks
-        .filter((t) => t.dueDate === today)
-        .sort((a, b) => taskOrder(a) - taskOrder(b)),
+    () => tasks.filter((t) => t.dueDate === today).sort((a, b) => taskOrder(a) - taskOrder(b)),
     [tasks, today],
   );
 
@@ -91,9 +83,7 @@ function TodayTasks({ today }: { today: string }) {
         </Button>
       </form>
       {todays.length === 0 ? (
-        <p className="text-sm text-muted-foreground py-8 text-center">
-          Nothing planned for today.
-        </p>
+        <p className="text-sm text-muted-foreground py-8 text-center">Nothing planned for today.</p>
       ) : (
         <ul className="space-y-1">
           {todays.map((t) => {
@@ -140,9 +130,11 @@ function TodayTasks({ today }: { today: string }) {
 }
 
 function HabitTracker({ today }: { today: string }) {
-  const { habits, add, toggleDate, remove } = useHabits();
+  const { habits, add, toggleDate, remove, addItem, removeItem, toggleItemDate } = useHabits();
   const [name, setName] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [itemsOpen, setItemsOpen] = useState<Set<string>>(new Set());
+  const [newItemLabel, setNewItemLabel] = useState<Record<string, string>>({});
   const [cursors, setCursors] = useState<Record<string, Date>>({});
 
   const submit = (e: React.FormEvent) => {
@@ -160,6 +152,22 @@ function HabitTracker({ today }: { today: string }) {
       else next.add(id);
       return next;
     });
+  };
+
+  const toggleItemsOpen = (id: string) => {
+    setItemsOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const submitNewItem = (habitId: string) => {
+    const label = (newItemLabel[habitId] ?? "").trim();
+    if (!label) return;
+    addItem(habitId, label);
+    setNewItemLabel((prev) => ({ ...prev, [habitId]: "" }));
   };
 
   const monthStart = () => {
@@ -203,6 +211,7 @@ function HabitTracker({ today }: { today: string }) {
             const done = h.history.includes(today);
             const streak = computeStreak(h.history, today);
             const isExpanded = expanded.has(h.id);
+            const isItemsOpen = itemsOpen.has(h.id);
             const cursor = cursors[h.id] ?? monthStart();
             const y = cursor.getFullYear();
             const m = cursor.getMonth();
@@ -236,6 +245,18 @@ function HabitTracker({ today }: { today: string }) {
                     {streak}
                   </span>
                   <button
+                    onClick={() => toggleItemsOpen(h.id)}
+                    className={cn(
+                      "text-muted-foreground hover:text-foreground transition shrink-0",
+                      isItemsOpen && "text-primary",
+                    )}
+                    aria-label="Toggle checklist"
+                    aria-expanded={isItemsOpen}
+                    title="Sub-items checklist"
+                  >
+                    <ListChecks className="h-4 w-4" />
+                  </button>
+                  <button
                     onClick={() => toggleExpand(h.id)}
                     className={cn(
                       "text-muted-foreground hover:text-foreground transition shrink-0",
@@ -254,6 +275,73 @@ function HabitTracker({ today }: { today: string }) {
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
+
+                {isItemsOpen && (
+                  <div className="px-3 pb-3 pt-1 space-y-1">
+                    {h.items.length === 0 && (
+                      <p className="text-xs text-muted-foreground pb-1">
+                        No sub-items yet — e.g. add each individual prayer here.
+                      </p>
+                    )}
+                    <ul className="space-y-0.5">
+                      {h.items.map((item) => {
+                        const itemDone = (h.itemHistory[item.id] ?? []).includes(today);
+                        return (
+                          <li
+                            key={item.id}
+                            className="group/item flex items-center gap-2 px-1 py-1 rounded hover:bg-accent/30"
+                          >
+                            <Checkbox
+                              checked={itemDone}
+                              onCheckedChange={() => toggleItemDate(h.id, item.id, today)}
+                              id={`hi-${item.id}`}
+                            />
+                            <label
+                              htmlFor={`hi-${item.id}`}
+                              className={cn(
+                                "flex-1 min-w-0 text-xs cursor-pointer truncate",
+                                itemDone && "text-muted-foreground line-through",
+                              )}
+                            >
+                              {item.label}
+                            </label>
+                            <button
+                              onClick={() => removeItem(item.id)}
+                              className="opacity-0 group-hover/item:opacity-100 text-muted-foreground hover:text-destructive transition shrink-0"
+                              aria-label="Remove item"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        submitNewItem(h.id);
+                      }}
+                      className="flex gap-1.5 pt-1"
+                    >
+                      <Input
+                        value={newItemLabel[h.id] ?? ""}
+                        onChange={(e) =>
+                          setNewItemLabel((prev) => ({ ...prev, [h.id]: e.target.value }))
+                        }
+                        placeholder="Add sub-item…"
+                        className="h-7 text-xs bg-background"
+                      />
+                      <Button
+                        type="submit"
+                        size="icon"
+                        className="h-7 w-7"
+                        aria-label="Add sub-item"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </Button>
+                    </form>
+                  </div>
+                )}
 
                 {isExpanded && (
                   <div className="px-3 pb-3 pt-1">
@@ -289,8 +377,7 @@ function HabitTracker({ today }: { today: string }) {
                     </div>
                     <div className="grid grid-cols-7 gap-1">
                       {rows.flat().map((d, i) => {
-                        if (!d)
-                          return <div key={i} className="aspect-square" />;
+                        if (!d) return <div key={i} className="aspect-square" />;
                         const iso = toISO(d);
                         const marked = h.history.includes(iso);
                         const isToday = iso === today;

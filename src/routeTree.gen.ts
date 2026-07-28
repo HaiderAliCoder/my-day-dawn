@@ -9,31 +9,17 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as TasksRouteImport } from './routes/tasks'
-import { Route as PlannerRouteImport } from './routes/planner'
-import { Route as GoalsRouteImport } from './routes/goals'
-import { Route as ClocksRouteImport } from './routes/clocks'
-import { Route as CalendarRouteImport } from './routes/calendar'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as CalendarRouteImport } from './routes/calendar'
+import { Route as ClocksRouteImport } from './routes/clocks'
+import { Route as GoalsRouteImport } from './routes/goals'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as PlannerRouteImport } from './routes/planner'
+import { Route as TasksRouteImport } from './routes/tasks'
 
-const TasksRoute = TasksRouteImport.update({
-  id: '/tasks',
-  path: '/tasks',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PlannerRoute = PlannerRouteImport.update({
-  id: '/planner',
-  path: '/planner',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const GoalsRoute = GoalsRouteImport.update({
-  id: '/goals',
-  path: '/goals',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ClocksRoute = ClocksRouteImport.update({
-  id: '/clocks',
-  path: '/clocks',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CalendarRoute = CalendarRouteImport.update({
@@ -41,9 +27,29 @@ const CalendarRoute = CalendarRouteImport.update({
   path: '/calendar',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const ClocksRoute = ClocksRouteImport.update({
+  id: '/clocks',
+  path: '/clocks',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GoalsRoute = GoalsRouteImport.update({
+  id: '/goals',
+  path: '/goals',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PlannerRoute = PlannerRouteImport.update({
+  id: '/planner',
+  path: '/planner',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TasksRoute = TasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -52,6 +58,7 @@ export interface FileRoutesByFullPath {
   '/calendar': typeof CalendarRoute
   '/clocks': typeof ClocksRoute
   '/goals': typeof GoalsRoute
+  '/login': typeof LoginRoute
   '/planner': typeof PlannerRoute
   '/tasks': typeof TasksRoute
 }
@@ -60,6 +67,7 @@ export interface FileRoutesByTo {
   '/calendar': typeof CalendarRoute
   '/clocks': typeof ClocksRoute
   '/goals': typeof GoalsRoute
+  '/login': typeof LoginRoute
   '/planner': typeof PlannerRoute
   '/tasks': typeof TasksRoute
 }
@@ -69,20 +77,24 @@ export interface FileRoutesById {
   '/calendar': typeof CalendarRoute
   '/clocks': typeof ClocksRoute
   '/goals': typeof GoalsRoute
+  '/login': typeof LoginRoute
   '/planner': typeof PlannerRoute
   '/tasks': typeof TasksRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/calendar' | '/clocks' | '/goals' | '/planner' | '/tasks'
+  fullPaths:
+    '/' | '/calendar' | '/clocks' | '/goals' | '/login' | '/planner' | '/tasks'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/calendar' | '/clocks' | '/goals' | '/planner' | '/tasks'
+  to:
+    '/' | '/calendar' | '/clocks' | '/goals' | '/login' | '/planner' | '/tasks'
   id:
     | '__root__'
     | '/'
     | '/calendar'
     | '/clocks'
     | '/goals'
+    | '/login'
     | '/planner'
     | '/tasks'
   fileRoutesById: FileRoutesById
@@ -92,38 +104,18 @@ export interface RootRouteChildren {
   CalendarRoute: typeof CalendarRoute
   ClocksRoute: typeof ClocksRoute
   GoalsRoute: typeof GoalsRoute
+  LoginRoute: typeof LoginRoute
   PlannerRoute: typeof PlannerRoute
   TasksRoute: typeof TasksRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/tasks': {
-      id: '/tasks'
-      path: '/tasks'
-      fullPath: '/tasks'
-      preLoaderRoute: typeof TasksRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/planner': {
-      id: '/planner'
-      path: '/planner'
-      fullPath: '/planner'
-      preLoaderRoute: typeof PlannerRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/goals': {
-      id: '/goals'
-      path: '/goals'
-      fullPath: '/goals'
-      preLoaderRoute: typeof GoalsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/clocks': {
-      id: '/clocks'
-      path: '/clocks'
-      fullPath: '/clocks'
-      preLoaderRoute: typeof ClocksRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/calendar': {
@@ -133,11 +125,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CalendarRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/clocks': {
+      id: '/clocks'
+      path: '/clocks'
+      fullPath: '/clocks'
+      preLoaderRoute: typeof ClocksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/goals': {
+      id: '/goals'
+      path: '/goals'
+      fullPath: '/goals'
+      preLoaderRoute: typeof GoalsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/planner': {
+      id: '/planner'
+      path: '/planner'
+      fullPath: '/planner'
+      preLoaderRoute: typeof PlannerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/tasks': {
+      id: '/tasks'
+      path: '/tasks'
+      fullPath: '/tasks'
+      preLoaderRoute: typeof TasksRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -148,9 +168,20 @@ const rootRouteChildren: RootRouteChildren = {
   CalendarRoute: CalendarRoute,
   ClocksRoute: ClocksRoute,
   GoalsRoute: GoalsRoute,
+  LoginRoute: LoginRoute,
   PlannerRoute: PlannerRoute,
   TasksRoute: TasksRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}
