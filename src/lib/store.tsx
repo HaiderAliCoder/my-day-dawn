@@ -28,7 +28,30 @@ export interface Habit {
   name: string;
   streak: number;
   lastCompleted?: string; // YYYY-MM-DD
-  history: string[];
+  history: string[]; // YYYY-MM-DD, unsorted set of completed days
+}
+
+/**
+ * Current streak derived from a habit's full history, counting back from
+ * today. If today isn't marked yet, the streak still reflects the run
+ * ending yesterday (so it doesn't drop to 0 just because you haven't
+ * checked in yet today).
+ */
+export function computeStreak(history: string[], today: string): number {
+  const set = new Set(history);
+  const cursor = new Date(today + "T00:00:00");
+  if (!set.has(today)) cursor.setDate(cursor.getDate() - 1);
+  let streak = 0;
+  while (true) {
+    const y = cursor.getFullYear();
+    const m = String(cursor.getMonth() + 1).padStart(2, "0");
+    const d = String(cursor.getDate()).padStart(2, "0");
+    const iso = `${y}-${m}-${d}`;
+    if (!set.has(iso)) break;
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return streak;
 }
 
 export interface Goal {
@@ -225,31 +248,29 @@ export function useHabits() {
       })),
     remove: (id: string) =>
       setState((s) => ({ ...s, habits: s.habits.filter((h) => h.id !== id) })),
-    toggleToday: (id: string, today: string) =>
+    /**
+     * Toggle completion for any given day (not just today), so each habit
+     * can have its own calendar of marked days. Streak/lastCompleted are
+     * kept in sync for backward compatibility, but the source of truth is
+     * `history` — use computeStreak() to get the live streak.
+     */
+    toggleDate: (id: string, date: string) =>
       setState((s) => ({
         ...s,
         habits: s.habits.map((h) => {
           if (h.id !== id) return h;
-          const done = h.lastCompleted === today;
-          if (done) {
-            // undo today
-            return {
-              ...h,
-              lastCompleted: undefined,
-              streak: Math.max(0, h.streak - 1),
-              history: h.history.filter((d) => d !== today),
-            };
-          }
-          // determine if streak continues (yesterday completed)
-          const yest = new Date(today);
-          yest.setDate(yest.getDate() - 1);
-          const y = yest.toISOString().slice(0, 10);
-          const continues = h.lastCompleted === y;
+          const marked = h.history.includes(date);
+          const history = marked
+            ? h.history.filter((d) => d !== date)
+            : [...h.history, date].sort();
+          const lastCompleted = history.length
+            ? history[history.length - 1]
+            : undefined;
           return {
             ...h,
-            lastCompleted: today,
-            streak: continues ? h.streak + 1 : 1,
-            history: [...h.history, today],
+            history,
+            lastCompleted,
+            streak: computeStreak(history, date),
           };
         }),
       })),
