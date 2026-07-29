@@ -730,7 +730,13 @@ export function useClocks() {
   const addMutation = useMutation({
     mutationFn: async (c: Omit<Clock, "id">) => {
       const { error } = await supabase.from("clocks").insert({ user_id: userId, ...c });
-      if (error) throw error;
+      if (error) {
+        // Postgres unique_violation — already added, not a real failure.
+        if (error.code === "23505") {
+          throw new Error("ALREADY_ADDED");
+        }
+        throw error;
+      }
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey }),
   });
@@ -745,7 +751,7 @@ export function useClocks() {
 
   return {
     clocks,
-    add: (c: Omit<Clock, "id">) => addMutation.mutate(c),
+    add: (c: Omit<Clock, "id">) => addMutation.mutateAsync(c),
     remove: (id: string) => removeMutation.mutate(id),
   };
 }

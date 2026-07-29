@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Plus, Search, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Plus, Search, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -131,7 +132,7 @@ function ClocksPage() {
     <div>
       <PageHeader
         title="World Clocks"
-        subtitle="Live times across regions"
+        subtitle={`Live times across regions · ${new Set(clocks.map((c) => c.timezone)).size} of ${TIMEZONES.length} timezones added`}
         actions={
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
@@ -145,9 +146,18 @@ function ClocksPage() {
                 <DialogTitle>Add a clock</DialogTitle>
               </DialogHeader>
               <TimezonePicker
-                onPick={(tz) => {
-                  add({ timezone: tz.timezone, city: tz.city, country: tz.country });
-                  setOpen(false);
+                existing={clocks}
+                onPick={async (tz) => {
+                  try {
+                    await add({ timezone: tz.timezone, city: tz.city, country: tz.country });
+                    setOpen(false);
+                  } catch (err) {
+                    if (err instanceof Error && err.message === "ALREADY_ADDED") {
+                      toast.error(`${tz.city} has already been added.`);
+                    } else {
+                      toast.error("Couldn't add that clock. Try again.");
+                    }
+                  }
                 }}
               />
             </DialogContent>
@@ -339,9 +349,20 @@ function CountryGroupRow({
   );
 }
 
-function TimezonePicker({ onPick }: { onPick: (tz: (typeof TIMEZONES)[number]) => void }) {
+function TimezonePicker({
+  existing,
+  onPick,
+}: {
+  existing: Clock[];
+  onPick: (tz: (typeof TIMEZONES)[number]) => void;
+}) {
   const [q, setQ] = useState("");
   const now = new Date();
+  const addedTimezones = useMemo(
+    () => new Set(existing.map((c) => c.timezone)),
+    [existing],
+  );
+
   const results = useMemo(() => {
     const query = q.trim().toLowerCase();
     const list = query
@@ -356,38 +377,58 @@ function TimezonePicker({ onPick }: { onPick: (tz: (typeof TIMEZONES)[number]) =
 
   return (
     <div>
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-        <Input
-          autoFocus
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search city, region, or country…"
-          className="pl-9 bg-background"
-        />
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search city, region, or country…"
+            className="pl-9 bg-background"
+          />
+        </div>
+        <span className="shrink-0 text-xs text-muted-foreground whitespace-nowrap">
+          {addedTimezones.size} of {TIMEZONES.length} added
+        </span>
       </div>
       <ul className="mt-3 max-h-80 overflow-auto divide-y divide-border rounded-md border border-border">
-        {results.map((tz) => (
-          <li key={tz.timezone}>
-            <button
-              onClick={() => onPick(tz)}
-              className="w-full text-left px-3 py-2 hover:bg-accent/60 flex items-center justify-between gap-3"
-            >
-              <span className="min-w-0">
-                <span className="block text-sm truncate">
-                  {tz.city}
-                  {tz.region && <span className="text-muted-foreground"> · {tz.region}</span>}
+        {results.map((tz) => {
+          const added = addedTimezones.has(tz.timezone);
+          return (
+            <li key={tz.timezone}>
+              <button
+                onClick={() => {
+                  if (added) {
+                    toast.error(`${tz.city} has already been added.`);
+                    return;
+                  }
+                  onPick(tz);
+                }}
+                className={cn(
+                  "w-full text-left px-3 py-2 flex items-center justify-between gap-3 transition",
+                  added ? "opacity-50 cursor-default" : "hover:bg-accent/60",
+                )}
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm truncate">
+                    {tz.city}
+                    {tz.region && <span className="text-muted-foreground"> · {tz.region}</span>}
+                  </span>
+                  <span className="block text-xs text-muted-foreground truncate">
+                    {tz.country} — {tz.timezone}
+                  </span>
                 </span>
-                <span className="block text-xs text-muted-foreground truncate">
-                  {tz.country} — {tz.timezone}
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    {getOffsetLabel(tz.timezone, now)}
+                  </span>
+                  {added && <Check className="h-4 w-4 text-primary" />}
                 </span>
-              </span>
-              <span className="text-xs text-muted-foreground shrink-0">
-                {getOffsetLabel(tz.timezone, now)}
-              </span>
-            </button>
-          </li>
-        ))}
+              </button>
+            </li>
+          );
+        })}
         {results.length === 0 && (
           <li className="p-4 text-sm text-muted-foreground text-center">No matches.</li>
         )}
