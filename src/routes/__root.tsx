@@ -9,6 +9,7 @@ import {
   Scripts,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
+import { toast } from "sonner";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -136,6 +137,7 @@ function FullScreenSpinner() {
 function AuthGate() {
   const { session, loading } = useAuth();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const search = useRouterState({ select: (s) => s.location.search });
   const navigate = useNavigate();
 
   // /reset-password is reached via a Supabase recovery link, which mints a
@@ -148,9 +150,17 @@ function AuthGate() {
     if (!session && !isBareAuthRoute) {
       navigate({ to: "/login", replace: true });
     } else if (session && pathname === "/login") {
+      // Supabase's confirmation link auto-signs the user in (session tokens
+      // arrive in the URL), so they never actually see the "verified"
+      // banner on the login page itself — it flashes for a moment, then
+      // this redirect fires. Surface it as a toast on the dashboard instead
+      // so the confirmation is guaranteed to be seen.
+      if ((search as Record<string, unknown>).verified === "true") {
+        toast.success("Email verified — you're all set.");
+      }
       navigate({ to: "/", replace: true });
     }
-  }, [loading, session, pathname, isBareAuthRoute, navigate]);
+  }, [loading, session, pathname, isBareAuthRoute, search, navigate]);
 
   if (loading) return <FullScreenSpinner />;
 
