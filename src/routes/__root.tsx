@@ -138,22 +138,30 @@ function AuthGate() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
 
+  // /reset-password is reached via a Supabase recovery link, which mints a
+  // temporary session. It must render standalone (no sidebar chrome) and
+  // must never bounce to "/" just because a session now exists.
+  const isBareAuthRoute = pathname === "/login" || pathname === "/reset-password";
+
   useEffect(() => {
     if (loading) return;
-    if (!session && pathname !== "/login") {
+    if (!session && !isBareAuthRoute) {
       navigate({ to: "/login", replace: true });
     } else if (session && pathname === "/login") {
       navigate({ to: "/", replace: true });
     }
-  }, [loading, session, pathname, navigate]);
+  }, [loading, session, pathname, isBareAuthRoute, navigate]);
 
   if (loading) return <FullScreenSpinner />;
 
+  if (isBareAuthRoute) {
+    return pathname === "/reset-password" || !session ? <Outlet /> : <FullScreenSpinner />;
+  }
+
   if (!session) {
-    // Render the login route directly (no sidebar chrome). While the
-    // redirect effect above is about to fire for any other path, show a
-    // spinner instead of flashing protected content.
-    return pathname === "/login" ? <Outlet /> : <FullScreenSpinner />;
+    // The redirect effect above is about to fire; show a spinner instead
+    // of flashing protected content.
+    return <FullScreenSpinner />;
   }
 
   return (

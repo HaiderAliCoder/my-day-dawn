@@ -8,6 +8,7 @@ import {
   LogOut,
   Menu,
   Notebook,
+  Settings,
   Sun,
   Target,
   X,
@@ -30,6 +31,7 @@ const NAV: NavItem[] = [
   { to: "/clocks", label: "World Clocks", icon: Globe2 },
   { to: "/goals", label: "Long-Term Goals", icon: Target },
   { to: "/motivation", label: "Motivation", icon: Clapperboard },
+  { to: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function AppShell({ children }: { children?: ReactNode }) {

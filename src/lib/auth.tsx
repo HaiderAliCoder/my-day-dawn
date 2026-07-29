@@ -11,6 +11,8 @@ type AuthCtx = {
   signIn: (email: string, password: string) => Promise<AuthResult>;
   signUp: (email: string, password: string) => Promise<AuthResult>;
   signOut: () => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<AuthResult>;
+  updatePassword: (password: string) => Promise<AuthResult>;
 };
 
 const AuthContext = createContext<AuthCtx | null>(null);
@@ -49,11 +51,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { error: error?.message ?? null };
       },
       signUp: async (email, password) => {
-        const { error } = await supabase.auth.signUp({ email, password });
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/login?verified=true`,
+          },
+        });
         return { error: error?.message ?? null };
       },
       signOut: async () => {
         await supabase.auth.signOut();
+      },
+      requestPasswordReset: async (email) => {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/reset-password`,
+        });
+        return { error: error?.message ?? null };
+      },
+      updatePassword: async (password) => {
+        const { error } = await supabase.auth.updateUser({ password });
+        return { error: error?.message ?? null };
       },
     }),
     [session, loading],
