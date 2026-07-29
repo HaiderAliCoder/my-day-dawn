@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FocusSessionWidget } from "@/components/focus-session";
 import { useHabits, useTasks, taskOrder, computeStreak } from "@/lib/store";
 import { useDragReorder } from "@/lib/use-drag-reorder";
 import { todayISO, formatLong, toISO, monthMatrix, MONTHS, DOW_SHORT } from "@/lib/date-utils";
@@ -39,12 +40,20 @@ function TodayPage() {
   return (
     <div>
       <PageHeader title="Today" subtitle={formatLong(now)} />
+      <div className="mb-6">
+        <TodayFocus />
+      </div>
       <div className="grid gap-6 md:grid-cols-[2fr_1fr]">
         <TodayTasks today={today} />
         <HabitTracker today={today} />
       </div>
     </div>
   );
+}
+
+function TodayFocus() {
+  const { tasks } = useTasks();
+  return <FocusSessionWidget tasks={tasks} />;
 }
 
 function TodayTasks({ today }: { today: string }) {

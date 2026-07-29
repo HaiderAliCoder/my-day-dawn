@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import {
   CalendarDays,
   CheckSquare,
+  Clapperboard,
   Globe2,
   LogOut,
   Menu,
@@ -28,6 +29,7 @@ const NAV: NavItem[] = [
   { to: "/tasks", label: "Tasks", icon: CheckSquare },
   { to: "/clocks", label: "World Clocks", icon: Globe2 },
   { to: "/goals", label: "Long-Term Goals", icon: Target },
+  { to: "/motivation", label: "Motivation", icon: Clapperboard },
 ];
 
 export function AppShell({ children }: { children?: ReactNode }) {

@@ -749,3 +749,231 @@ export function useClocks() {
     remove: (id: string) => removeMutation.mutate(id),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Motivational videos — short clips (0-10MB) stored in the private
+// "motivational-videos" Storage bucket, one folder per user (RLS-scoped).
+// ---------------------------------------------------------------------------
+
+export interface MotivationalVideo {
+  id: string;
+  title: string;
+  storagePath: string;
+  durationSeconds?: number;
+  tags: string[];
+  createdAt: number;
+}
+
+interface MotivationalVideoRow {
+  id: string;
+  title: string;
+  storage_path: string;
+  duration_seconds: number | null;
+  tags: string[];
+  created_at: string;
+}
+
+function rowToVideo(row: MotivationalVideoRow): MotivationalVideo {
+  return {
+    id: row.id,
+    title: row.title,
+    storagePath: row.storage_path,
+    durationSeconds: row.duration_seconds ?? undefined,
+    tags: row.tags ?? [],
+    createdAt: new Date(row.created_at).getTime(),
+  };
+}
+
+const VIDEO_BUCKET = "motivational-videos";
+export const MAX_VIDEO_BYTES = 10 * 1024 * 1024; // 10MB
+
+export function useMotivationalVideos() {
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const queryKey = ["motivational_videos", userId] as const;
+
+  const query = useQuery({
+    queryKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<MotivationalVideo[]> => {
+      const { data, error } = await supabase
+        .from("motivational_videos")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data as MotivationalVideoRow[]).map(rowToVideo);
+    },
+  });
+
+  const videos = query.data ?? [];
+
+  const uploadMutation = useMutation({
+    mutationFn: async ({ file, title, tags }: { file: File; title: string; tags: string[] }) => {
+      if (!userId) throw new Error("Not signed in");
+      if (file.size > MAX_VIDEO_BYTES) {
+        throw new Error("Video must be 10MB or smaller.");
+      }
+      const ext = file.name.split(".").pop() || "mp4";
+      const path = `${userId}/${crypto.randomUUID()}.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(VIDEO_BUCKET)
+        .upload(path, file, { contentType: file.type || "video/mp4" });
+      if (uploadError) throw uploadError;
+
+      const { data, error } = await supabase
+        .from("motivational_videos")
+        .insert({
+          user_id: userId,
+          title,
+          storage_path: path,
+          tags,
+        })
+        .select("*")
+        .single();
+      if (error) throw error;
+      return rowToVideo(data as MotivationalVideoRow);
+    },
+    onSuccess: (video) =>
+      queryClient.setQueryData<MotivationalVideo[]>(queryKey, (old) => [video, ...(old ?? [])]),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (video: MotivationalVideo) => {
+      await supabase.storage.from(VIDEO_BUCKET).remove([video.storagePath]);
+      const { error } = await supabase.from("motivational_videos").delete().eq("id", video.id);
+      if (error) throw error;
+    },
+    onMutate: async (video) =>
+      queryClient.setQueryData<MotivationalVideo[]>(queryKey, (old) =>
+        (old ?? []).filter((v) => v.id !== video.id),
+      ),
+  });
+
+  return {
+    videos,
+    isLoading: query.isLoading,
+    upload: (file: File, title: string, tags: string[] = []) =>
+      uploadMutation.mutateAsync({ file, title, tags }),
+    uploading: uploadMutation.isPending,
+    uploadError: uploadMutation.error as Error | null,
+    remove: (video: MotivationalVideo) => removeMutation.mutate(video),
+    /** Signed URL, valid 1 hour — bucket is private, so this is required to play/view. */
+    getPlaybackUrl: async (storagePath: string): Promise<string | null> => {
+      const { data, error } = await supabase.storage
+        .from(VIDEO_BUCKET)
+        .createSignedUrl(storagePath, 60 * 60);
+      if (error) return null;
+      return data.signedUrl;
+    },
+    pickRandom: (): MotivationalVideo | undefined =>
+      videos.length ? videos[Math.floor(Math.random() * videos.length)] : undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Focus sessions — a simple timer bound to a task, so "start working" is a
+// single deliberate action rather than another item on a list.
+// ---------------------------------------------------------------------------
+
+export interface FocusSession {
+  id: string;
+  taskId?: string;
+  plannedMinutes: number;
+  startedAt: number;
+  endedAt?: number;
+  completed: boolean;
+}
+
+interface FocusSessionRow {
+  id: string;
+  task_id: string | null;
+  planned_minutes: number;
+  started_at: string;
+  ended_at: string | null;
+  completed: boolean;
+}
+
+function rowToSession(row: FocusSessionRow): FocusSession {
+  return {
+    id: row.id,
+    taskId: row.task_id ?? undefined,
+    plannedMinutes: row.planned_minutes,
+    startedAt: new Date(row.started_at).getTime(),
+    endedAt: row.ended_at ? new Date(row.ended_at).getTime() : undefined,
+    completed: row.completed,
+  };
+}
+
+export function useFocusSessions() {
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const queryKey = ["focus_sessions", userId] as const;
+
+  const query = useQuery({
+    queryKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<FocusSession[]> => {
+      const { data, error } = await supabase
+        .from("focus_sessions")
+        .select("*")
+        .order("started_at", { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      return (data as FocusSessionRow[]).map(rowToSession);
+    },
+  });
+
+  const sessions = query.data ?? [];
+
+  const startMutation = useMutation({
+    mutationFn: async ({ taskId, plannedMinutes }: { taskId?: string; plannedMinutes: number }) => {
+      const { data, error } = await supabase
+        .from("focus_sessions")
+        .insert({
+          user_id: userId,
+          task_id: taskId ?? null,
+          planned_minutes: plannedMinutes,
+        })
+        .select("*")
+        .single();
+      if (error) throw error;
+      return rowToSession(data as FocusSessionRow);
+    },
+    onSuccess: (session) =>
+      queryClient.setQueryData<FocusSession[]>(queryKey, (old) => [session, ...(old ?? [])]),
+  });
+
+  const finishMutation = useMutation({
+    mutationFn: async ({ id, completed }: { id: string; completed: boolean }) => {
+      const { error } = await supabase
+        .from("focus_sessions")
+        .update({ ended_at: new Date().toISOString(), completed })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async ({ id, completed }) =>
+      queryClient.setQueryData<FocusSession[]>(queryKey, (old) =>
+        (old ?? []).map((s) => (s.id === id ? { ...s, endedAt: Date.now(), completed } : s)),
+      ),
+  });
+
+  const todayCompletedCount = countTodayCompleted(sessions);
+
+  return {
+    sessions,
+    start: (taskId: string | undefined, plannedMinutes: number) =>
+      startMutation.mutateAsync({ taskId, plannedMinutes }),
+    finish: (id: string, completed: boolean) => finishMutation.mutate({ id, completed }),
+    todayCompletedCount,
+  };
+}
+
+function countTodayCompleted(sessions: FocusSession[]): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const cutoff = today.getTime();
+  return sessions.filter((s) => s.completed && s.startedAt >= cutoff).length;
+}
