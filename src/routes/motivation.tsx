@@ -1,6 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useRef, useState } from "react";
-import { Play, Plus, Shuffle, Trash2, Upload, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Clapperboard,
+  Image as ImageIcon,
+  Play,
+  Plus,
+  Shuffle,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,24 +20,104 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { MAX_VIDEO_BYTES, useMotivationalVideos, type MotivationalVideo } from "@/lib/store";
+import {
+  MAX_IMAGE_BYTES,
+  MAX_VIDEO_BYTES,
+  useMotivationalImages,
+  useMotivationalVideos,
+  type MotivationalImage,
+  type MotivationalVideo,
+} from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/motivation")({
   head: () => ({
     meta: [
       { title: "Motivation — Focus" },
-      { name: "description", content: "Your own library of short motivational clips." },
+      { name: "description", content: "Your own library of motivational clips and pictures." },
       { property: "og:title", content: "Motivation — Focus" },
-      { property: "og:description", content: "Your own library of short motivational clips." },
+      {
+        property: "og:description",
+        content: "Your own library of motivational clips and pictures.",
+      },
     ],
   }),
   component: MotivationPage,
 });
 
+type Tab = "videos" | "pictures";
+
 function MotivationPage() {
-  const { videos, isLoading, remove, getPlaybackUrl, pickRandom } = useMotivationalVideos();
+  const [tab, setTab] = useState<Tab>("videos");
   const [open, setOpen] = useState(false);
+
+  return (
+    <div>
+      <PageHeader
+        title="Motivation"
+        subtitle="Your own clips and pictures — for when starting is the hard part"
+        actions={
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="h-4 w-4 mr-1.5" />
+                Add {tab === "videos" ? "video" : "picture"}
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>
+                  Add a motivational {tab === "videos" ? "clip" : "picture"}
+                </DialogTitle>
+              </DialogHeader>
+              {tab === "videos" ? (
+                <VideoUploadForm onDone={() => setOpen(false)} />
+              ) : (
+                <ImageUploadForm onDone={() => setOpen(false)} />
+              )}
+            </DialogContent>
+          </Dialog>
+        }
+      />
+
+      <div className="mb-6 inline-flex rounded-lg border border-border bg-card p-1">
+        <button
+          onClick={() => setTab("videos")}
+          className={cn(
+            "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors",
+            tab === "videos"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <Clapperboard className="h-3.5 w-3.5" />
+          Videos
+        </button>
+        <button
+          onClick={() => setTab("pictures")}
+          className={cn(
+            "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors",
+            tab === "pictures"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <ImageIcon className="h-3.5 w-3.5" />
+          Pictures
+        </button>
+      </div>
+
+      {tab === "videos" ? <VideoGrid /> : <ImageGrid />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Videos
+// ---------------------------------------------------------------------------
+
+function VideoGrid() {
+  const { videos, isLoading, remove, getPlaybackUrl, pickRandom } = useMotivationalVideos();
   const [player, setPlayer] = useState<{ title: string; url: string } | null>(null);
 
   const openPlayer = async (video: MotivationalVideo) => {
@@ -41,108 +130,67 @@ function MotivationPage() {
     if (pick) await openPlayer(pick);
   };
 
-  return (
-    <div>
-      <PageHeader
-        title="Motivation"
-        subtitle="Your own clips — for when starting is the hard part"
-        actions={
-          <div className="flex items-center gap-2">
-            {videos.length > 0 && (
-              <Button variant="outline" onClick={surpriseMe}>
-                <Shuffle className="h-4 w-4 mr-1.5" />
-                Surprise me
-              </Button>
-            )}
-            <Dialog open={open} onOpenChange={setOpen}>
-              <DialogTrigger asChild>
-                <Button>
-                  <Plus className="h-4 w-4 mr-1.5" />
-                  Add video
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-lg">
-                <DialogHeader>
-                  <DialogTitle>Add a motivational clip</DialogTitle>
-                </DialogHeader>
-                <UploadForm onDone={() => setOpen(false)} />
-              </DialogContent>
-            </Dialog>
-          </div>
-        }
-      />
+  if (isLoading) return <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>;
 
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>
-      ) : videos.length === 0 ? (
-        <div className="rounded-xl border border-border bg-card p-10 text-center">
-          <p className="text-sm text-muted-foreground">
-            No clips yet. Add a short video (max 10MB) — a pep talk, a reminder of why you started,
-            whatever gets you moving.
-          </p>
-        </div>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {videos.map((v) => (
-            <div key={v.id} className="group rounded-xl border border-border bg-card p-4 relative">
-              <button
-                onClick={() => remove(v)}
-                className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
-                aria-label="Delete video"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => openPlayer(v)}
-                className="w-full flex flex-col items-start gap-3 text-left"
-              >
-                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  <Play className="h-4 w-4 ml-0.5" />
-                </span>
-                <span>
-                  <span className="block text-sm font-medium truncate max-w-[14rem]">
-                    {v.title}
+  if (videos.length === 0) {
+    return (
+      <div className="rounded-xl border border-border bg-card p-10 text-center">
+        <p className="text-sm text-muted-foreground">
+          No clips yet. Add a short video (max 10MB) — a pep talk, a reminder of why you started,
+          whatever gets you moving.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="mb-4">
+        <Button variant="outline" size="sm" onClick={surpriseMe}>
+          <Shuffle className="h-3.5 w-3.5 mr-1.5" />
+          Surprise me
+        </Button>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {videos.map((v) => (
+          <div key={v.id} className="group rounded-xl border border-border bg-card p-4 relative">
+            <button
+              onClick={() => remove(v)}
+              className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
+              aria-label="Delete video"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => openPlayer(v)}
+              className="w-full flex flex-col items-start gap-3 text-left"
+            >
+              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Play className="h-4 w-4 ml-0.5" />
+              </span>
+              <span>
+                <span className="block text-sm font-medium truncate max-w-[14rem]">{v.title}</span>
+                {v.tags.length > 0 && (
+                  <span className="block text-xs text-muted-foreground mt-0.5 truncate max-w-[14rem]">
+                    {v.tags.join(" · ")}
                   </span>
-                  {v.tags.length > 0 && (
-                    <span className="block text-xs text-muted-foreground mt-0.5 truncate max-w-[14rem]">
-                      {v.tags.join(" · ")}
-                    </span>
-                  )}
-                </span>
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+                )}
+              </span>
+            </button>
+          </div>
+        ))}
+      </div>
 
       {player && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setPlayer(null)}
-        >
-          <div
-            className="w-full max-w-xl rounded-xl bg-card border border-border p-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium truncate">{player.title}</h3>
-              <button
-                onClick={() => setPlayer(null)}
-                className="text-muted-foreground hover:text-foreground"
-                aria-label="Close"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <video src={player.url} controls autoPlay className="w-full rounded-md max-h-[70vh]" />
-          </div>
-        </div>
+        <Lightbox onClose={() => setPlayer(null)} title={player.title}>
+          <video src={player.url} controls autoPlay className="w-full rounded-md max-h-[70vh]" />
+        </Lightbox>
       )}
-    </div>
+    </>
   );
 }
 
-function UploadForm({ onDone }: { onDone: () => void }) {
+function VideoUploadForm({ onDone }: { onDone: () => void }) {
   const { upload, uploading, uploadError } = useMotivationalVideos();
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
@@ -213,5 +261,216 @@ function UploadForm({ onDone }: { onDone: () => void }) {
         {uploading ? "Uploading…" : "Add clip"}
       </Button>
     </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pictures
+// ---------------------------------------------------------------------------
+
+function ImageGrid() {
+  const { images, isLoading, remove, getViewUrl } = useMotivationalImages();
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const [viewer, setViewer] = useState<{ title: string; url: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const img of images) {
+        if (thumbs[img.id]) continue;
+        const url = await getViewUrl(img.storagePath);
+        if (!cancelled && url) {
+          setThumbs((prev) => ({ ...prev, [img.id]: url }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [images]);
+
+  const openViewer = async (image: MotivationalImage) => {
+    const url = thumbs[image.id] ?? (await getViewUrl(image.storagePath));
+    if (url) setViewer({ title: image.title, url });
+  };
+
+  if (isLoading) return <p className="text-sm text-muted-foreground py-10 text-center">Loading…</p>;
+
+  if (images.length === 0) {
+    return (
+      <div className="rounded-xl border border-border bg-card p-10 text-center">
+        <p className="text-sm text-muted-foreground">
+          No pictures yet. Add a photo (max 3MB) — a goal board, a quote, a memory of why this
+          matters.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+        {images.map((img) => (
+          <div
+            key={img.id}
+            className="group relative aspect-square rounded-xl border border-border bg-card overflow-hidden"
+          >
+            <button
+              onClick={() => remove(img)}
+              className="absolute top-2 right-2 z-10 p-1 rounded-md bg-background/80 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
+              aria-label="Delete picture"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+            <button onClick={() => openViewer(img)} className="w-full h-full block">
+              {thumbs[img.id] ? (
+                <img src={thumbs[img.id]} alt={img.title} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                  <ImageIcon className="h-6 w-6" />
+                </div>
+              )}
+              <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pt-4 pb-1.5 text-left">
+                <span className="block text-xs text-white truncate">{img.title}</span>
+              </span>
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {viewer && (
+        <Lightbox onClose={() => setViewer(null)} title={viewer.title}>
+          <img
+            src={viewer.url}
+            alt={viewer.title}
+            className="w-full rounded-md max-h-[75vh] object-contain"
+          />
+        </Lightbox>
+      )}
+    </>
+  );
+}
+
+function ImageUploadForm({ onDone }: { onDone: () => void }) {
+  const { upload, uploading, uploadError } = useMotivationalImages();
+  const [title, setTitle] = useState("");
+  const [tags, setTags] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [sizeError, setSizeError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const onFileChange = (f: File | null) => {
+    setSizeError(null);
+    if (f && f.size > MAX_IMAGE_BYTES) {
+      setSizeError("That file is over 3MB — pick a smaller image.");
+      setFile(null);
+      setPreviewUrl(null);
+      return;
+    }
+    setFile(f);
+    setPreviewUrl(f ? URL.createObjectURL(f) : null);
+    if (f && !title) setTitle(f.name.replace(/\.[^/.]+$/, ""));
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!file || !title.trim()) return;
+    const tagList = tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    await upload(file, title.trim(), tagList);
+    onDone();
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-4">
+      <div
+        onClick={() => inputRef.current?.click()}
+        className={cn(
+          "rounded-lg border border-dashed border-border p-6 text-center cursor-pointer hover:bg-accent/30 transition overflow-hidden",
+          file && "border-primary/60",
+        )}
+      >
+        {previewUrl ? (
+          <img
+            src={previewUrl}
+            alt=""
+            className="mx-auto max-h-40 rounded-md mb-2 object-contain"
+          />
+        ) : (
+          <Upload className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
+        )}
+        <p className="text-sm">{file ? file.name : "Click to choose a picture (max 3MB)"}</p>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
+        />
+      </div>
+      {sizeError && <p className="text-xs text-destructive">{sizeError}</p>}
+
+      <Input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="Title"
+        className="bg-background"
+        required
+      />
+      <Input
+        value={tags}
+        onChange={(e) => setTags(e.target.value)}
+        placeholder="Tags, comma separated (optional) — e.g. goals, quotes"
+        className="bg-background"
+      />
+
+      {uploadError && <p className="text-xs text-destructive">{uploadError.message}</p>}
+
+      <Button type="submit" disabled={!file || !title.trim() || uploading} className="w-full">
+        {uploading ? "Uploading…" : "Add picture"}
+      </Button>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared lightbox
+// ---------------------------------------------------------------------------
+
+function Lightbox({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-xl rounded-xl bg-card border border-border p-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium truncate">{title}</h3>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
   );
 }

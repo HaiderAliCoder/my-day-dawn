@@ -873,6 +873,122 @@ export function useMotivationalVideos() {
 }
 
 // ---------------------------------------------------------------------------
+// Motivational images — pics (0-3MB) stored in the private
+// "motivational-images" Storage bucket, same pattern as videos.
+// ---------------------------------------------------------------------------
+
+export interface MotivationalImage {
+  id: string;
+  title: string;
+  storagePath: string;
+  tags: string[];
+  createdAt: number;
+}
+
+interface MotivationalImageRow {
+  id: string;
+  title: string;
+  storage_path: string;
+  tags: string[];
+  created_at: string;
+}
+
+function rowToImage(row: MotivationalImageRow): MotivationalImage {
+  return {
+    id: row.id,
+    title: row.title,
+    storagePath: row.storage_path,
+    tags: row.tags ?? [],
+    createdAt: new Date(row.created_at).getTime(),
+  };
+}
+
+const IMAGE_BUCKET = "motivational-images";
+export const MAX_IMAGE_BYTES = 3 * 1024 * 1024; // 3MB
+
+export function useMotivationalImages() {
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const queryKey = ["motivational_images", userId] as const;
+
+  const query = useQuery({
+    queryKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<MotivationalImage[]> => {
+      const { data, error } = await supabase
+        .from("motivational_images")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data as MotivationalImageRow[]).map(rowToImage);
+    },
+  });
+
+  const images = query.data ?? [];
+
+  const uploadMutation = useMutation({
+    mutationFn: async ({ file, title, tags }: { file: File; title: string; tags: string[] }) => {
+      if (!userId) throw new Error("Not signed in");
+      if (file.size > MAX_IMAGE_BYTES) {
+        throw new Error("Image must be 3MB or smaller.");
+      }
+      const ext = file.name.split(".").pop() || "jpg";
+      const path = `${userId}/${crypto.randomUUID()}.${ext}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from(IMAGE_BUCKET)
+        .upload(path, file, { contentType: file.type || "image/jpeg" });
+      if (uploadError) throw uploadError;
+
+      const { data, error } = await supabase
+        .from("motivational_images")
+        .insert({
+          user_id: userId,
+          title,
+          storage_path: path,
+          tags,
+        })
+        .select("*")
+        .single();
+      if (error) throw error;
+      return rowToImage(data as MotivationalImageRow);
+    },
+    onSuccess: (image) =>
+      queryClient.setQueryData<MotivationalImage[]>(queryKey, (old) => [image, ...(old ?? [])]),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: async (image: MotivationalImage) => {
+      await supabase.storage.from(IMAGE_BUCKET).remove([image.storagePath]);
+      const { error } = await supabase.from("motivational_images").delete().eq("id", image.id);
+      if (error) throw error;
+    },
+    onMutate: async (image) =>
+      queryClient.setQueryData<MotivationalImage[]>(queryKey, (old) =>
+        (old ?? []).filter((i) => i.id !== image.id),
+      ),
+  });
+
+  return {
+    images,
+    isLoading: query.isLoading,
+    upload: (file: File, title: string, tags: string[] = []) =>
+      uploadMutation.mutateAsync({ file, title, tags }),
+    uploading: uploadMutation.isPending,
+    uploadError: uploadMutation.error as Error | null,
+    remove: (image: MotivationalImage) => removeMutation.mutate(image),
+    getViewUrl: async (storagePath: string): Promise<string | null> => {
+      const { data, error } = await supabase.storage
+        .from(IMAGE_BUCKET)
+        .createSignedUrl(storagePath, 60 * 60);
+      if (error) return null;
+      return data.signedUrl;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Focus sessions — a simple timer bound to a task, so "start working" is a
 // single deliberate action rather than another item on a list.
 // ---------------------------------------------------------------------------
