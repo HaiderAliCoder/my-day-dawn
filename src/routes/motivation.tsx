@@ -227,13 +227,20 @@ function VideoUploadForm({ onDone }: { onDone: () => void }) {
   const submitInstagram = async (e: React.FormEvent) => {
     e.preventDefault();
     setIgError(null);
-    if (!igUrl.trim()) return;
+    const trimmed = igUrl.trim();
+    if (!trimmed) return;
+    if (!/^https?:\/\/(www\.)?instagram\.com\/(reel|p|tv)\/[^/?#\s]+/i.test(trimmed)) {
+      setIgError(
+        "That's not a full post/reel link. It should look like instagram.com/reel/ABC123 — open the post in Instagram, tap Share → Copy Link, and paste that.",
+      );
+      return;
+    }
     const tagList = tags
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
     try {
-      await importFromInstagram(igUrl.trim(), title.trim() || undefined, tagList);
+      await importFromInstagram(trimmed, title.trim() || undefined, tagList);
       onDone();
     } catch (err) {
       setIgError(err instanceof Error ? err.message : "Import failed.");

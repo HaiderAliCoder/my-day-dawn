@@ -870,7 +870,22 @@ export function useMotivationalVideos() {
       const { data, error } = await supabase.functions.invoke("import-instagram-video", {
         body: { url, title, tags },
       });
-      if (error) throw error;
+      if (error) {
+        // supabase-js discards the response body on non-2xx by default —
+        // read it ourselves so the real reason reaches the UI instead of
+        // the generic "non-2xx status code" message.
+        let message = error.message;
+        const ctx = (error as { context?: Response }).context;
+        if (ctx) {
+          try {
+            const body = await ctx.clone().json();
+            if (body?.error) message = body.error;
+          } catch {
+            /* body wasn't JSON — keep the generic message */
+          }
+        }
+        throw new Error(message);
+      }
       if (data?.error) throw new Error(data.error);
       return rowToVideo(data.video as MotivationalVideoRow);
     },
