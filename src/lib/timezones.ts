@@ -15,8 +15,18 @@ export const TIMEZONES: TzEntry[] = [
   { timezone: "America/Detroit", city: "Detroit", country: "United States", region: "Eastern" },
   { timezone: "America/Chicago", city: "Chicago", country: "United States", region: "Central" },
   { timezone: "America/Denver", city: "Denver", country: "United States", region: "Mountain" },
-  { timezone: "America/Phoenix", city: "Phoenix", country: "United States", region: "Arizona (no DST)" },
-  { timezone: "America/Los_Angeles", city: "Los Angeles", country: "United States", region: "Pacific" },
+  {
+    timezone: "America/Phoenix",
+    city: "Phoenix",
+    country: "United States",
+    region: "Arizona (no DST)",
+  },
+  {
+    timezone: "America/Los_Angeles",
+    city: "Los Angeles",
+    country: "United States",
+    region: "Pacific",
+  },
   { timezone: "America/Anchorage", city: "Anchorage", country: "United States", region: "Alaska" },
   { timezone: "Pacific/Honolulu", city: "Honolulu", country: "United States", region: "Hawaii" },
 
@@ -114,7 +124,12 @@ export const TIMEZONES: TzEntry[] = [
   { timezone: "Australia/Perth", city: "Perth", country: "Australia", region: "Western" },
   { timezone: "Australia/Adelaide", city: "Adelaide", country: "Australia", region: "Central" },
   { timezone: "Australia/Darwin", city: "Darwin", country: "Australia", region: "Central (NT)" },
-  { timezone: "Australia/Brisbane", city: "Brisbane", country: "Australia", region: "Eastern (QLD)" },
+  {
+    timezone: "Australia/Brisbane",
+    city: "Brisbane",
+    country: "Australia",
+    region: "Eastern (QLD)",
+  },
   { timezone: "Australia/Sydney", city: "Sydney", country: "Australia", region: "Eastern" },
   { timezone: "Australia/Melbourne", city: "Melbourne", country: "Australia", region: "Eastern" },
   { timezone: "Australia/Hobart", city: "Hobart", country: "Australia", region: "Tasmania" },
@@ -144,17 +159,42 @@ export function getOffsetLabel(timezone: string, at: Date = new Date()): string 
   }
 }
 
-export function formatTimeInZone(timezone: string, at: Date = new Date()): string {
+export function getHourInZone(timezone: string, at: Date = new Date()): number {
   try {
-    return new Intl.DateTimeFormat("en-GB", {
+    const dtf = new Intl.DateTimeFormat("en-GB", {
       timeZone: timezone,
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
       hour12: false,
-    }).format(at);
+    });
+    const parts = dtf.formatToParts(at);
+    const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+    const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+    const s = Number(parts.find((p) => p.type === "second")?.value ?? 0);
+    return h + m / 60 + s / 3600;
   } catch {
-    return "--:--:--";
+    return 0;
+  }
+}
+
+export function formatTimeInZone(
+  timezone: string,
+  at: Date = new Date(),
+  options?: { hour12?: boolean; seconds?: boolean },
+): string {
+  const { hour12 = false, seconds = true } = options ?? {};
+  try {
+    const opts: Intl.DateTimeFormatOptions = {
+      timeZone: timezone,
+      hour: hour12 ? "numeric" : "2-digit",
+      minute: "2-digit",
+      hour12,
+    };
+    if (seconds) opts.second = "2-digit";
+    return new Intl.DateTimeFormat("en-US", opts).format(at);
+  } catch {
+    return "--:--";
   }
 }
 

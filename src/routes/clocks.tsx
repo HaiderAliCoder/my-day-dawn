@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, Trash2 } from "lucide-react";
+import { ChevronDown, Plus, Search, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,11 +11,23 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { useClocks } from "@/lib/store";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { useLocalStorageState } from "@/hooks/use-local-storage";
+import { cn } from "@/lib/utils";
+import { useClocks, type Clock } from "@/lib/store";
 import {
   TIMEZONES,
   formatDateInZone,
   formatTimeInZone,
+  getHourInZone,
   getOffsetLabel,
 } from "@/lib/timezones";
 
@@ -40,10 +52,80 @@ function useNow() {
   return now;
 }
 
+type SortMode = "alpha" | "time-asc" | "time-desc";
+
+type ListItem =
+  { kind: "single"; clock: Clock } | { kind: "group"; country: string; clocks: Clock[] };
+
+function groupByCountry(clocks: Clock[]): ListItem[] {
+  const byCountry = new Map<string, Clock[]>();
+  for (const c of clocks) {
+    const key = c.country?.trim() || "Other";
+    const arr = byCountry.get(key);
+    if (arr) arr.push(c);
+    else byCountry.set(key, [c]);
+  }
+  const items: ListItem[] = [];
+  for (const [country, group] of byCountry) {
+    items.push(
+      group.length > 1
+        ? { kind: "group", country, clocks: group }
+        : { kind: "single", clock: group[0] },
+    );
+  }
+  return items;
+}
+
+function countryOf(item: ListItem): string {
+  return item.kind === "single" ? item.clock.country : item.country;
+}
+
+function avgHour(clocksIn: Clock[], now: Date): number {
+  const hours = clocksIn.map((c) => getHourInZone(c.timezone, now));
+  return hours.reduce((a, b) => a + b, 0) / hours.length;
+}
+
+function sortAndOrder(items: ListItem[], mode: SortMode, now: Date): ListItem[] {
+  const withinGroupSort = (clocksIn: Clock[]) =>
+    [...clocksIn].sort((a, b) => {
+      if (mode === "alpha") return a.city.localeCompare(b.city);
+      const ha = getHourInZone(a.timezone, now);
+      const hb = getHourInZone(b.timezone, now);
+      if (ha !== hb) return mode === "time-asc" ? ha - hb : hb - ha;
+      return a.city.localeCompare(b.city);
+    });
+
+  const ordered = items.map((item) =>
+    item.kind === "group" ? { ...item, clocks: withinGroupSort(item.clocks) } : item,
+  );
+
+  ordered.sort((a, b) => {
+    if (mode === "alpha") return countryOf(a).localeCompare(countryOf(b));
+    const ha = a.kind === "single" ? getHourInZone(a.clock.timezone, now) : avgHour(a.clocks, now);
+    const hb = b.kind === "single" ? getHourInZone(b.clock.timezone, now) : avgHour(b.clocks, now);
+    if (ha !== hb) return mode === "time-asc" ? ha - hb : hb - ha;
+    return countryOf(a).localeCompare(countryOf(b));
+  });
+
+  return ordered;
+}
+
 function ClocksPage() {
   const { clocks, add, remove } = useClocks();
   const [open, setOpen] = useState(false);
   const now = useNow();
+
+  const [sortMode, setSortMode] = useLocalStorageState<SortMode>("clocks:sort-mode", "alpha");
+  const [hour12, setHour12] = useLocalStorageState<boolean>("clocks:hour12", true);
+  const [expanded, setExpanded] = useLocalStorageState<Record<string, boolean>>(
+    "clocks:expanded-groups",
+    {},
+  );
+
+  const items = useMemo(
+    () => sortAndOrder(groupByCountry(clocks), sortMode, now),
+    [clocks, sortMode, now],
+  );
 
   return (
     <div>
@@ -73,47 +155,191 @@ function ClocksPage() {
         }
       />
 
+      {clocks.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <Select value={sortMode} onValueChange={(v) => setSortMode(v as SortMode)}>
+            <SelectTrigger className="h-9 w-[190px] bg-background text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="alpha">Sort: A–Z</SelectItem>
+              <SelectItem value="time-asc">Sort: Morning → Night</SelectItem>
+              <SelectItem value="time-desc">Sort: Night → Morning</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            value={hour12 ? "12h" : "24h"}
+            onValueChange={(v) => v && setHour12(v === "12h")}
+          >
+            <ToggleGroupItem value="12h" className="h-9 px-3 text-xs data-[state=on]:bg-accent">
+              12h
+            </ToggleGroupItem>
+            <ToggleGroupItem value="24h" className="h-9 px-3 text-xs data-[state=on]:bg-accent">
+              24h
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      )}
+
       {clocks.length === 0 ? (
         <div className="rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">
           No clocks yet. Add your first one.
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {clocks.map((c) => {
-            const time = formatTimeInZone(c.timezone, now);
-            const date = formatDateInZone(c.timezone, now);
-            const offset = getOffsetLabel(c.timezone, now);
-            return (
-              <div
-                key={c.id}
-                className="group rounded-xl border border-border bg-card p-5 relative"
-              >
-                <button
-                  onClick={() => remove(c.id)}
-                  className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
-                  aria-label="Remove"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-                <div className="text-sm font-medium truncate">{c.city}</div>
-                <div className="text-xs text-muted-foreground truncate">{c.country}</div>
-                <div className="mt-3 font-mono text-3xl tabular-nums tracking-tight">
-                  {time}
-                </div>
-                <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{date}</span>
-                  <span>{offset}</span>
-                </div>
-              </div>
-            );
-          })}
+        <div className="space-y-2">
+          {items.map((item) =>
+            item.kind === "single" ? (
+              <ClockRow
+                key={item.clock.id}
+                clock={item.clock}
+                now={now}
+                hour12={hour12}
+                onRemove={() => remove(item.clock.id)}
+              />
+            ) : (
+              <CountryGroupRow
+                key={item.country}
+                country={item.country}
+                clocks={item.clocks}
+                now={now}
+                hour12={hour12}
+                expanded={!!expanded[item.country]}
+                onToggle={() => setExpanded((e) => ({ ...e, [item.country]: !e[item.country] }))}
+                onRemove={(id) => remove(id)}
+              />
+            ),
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function TimezonePicker({ onPick }: { onPick: (tz: typeof TIMEZONES[number]) => void }) {
+function ClockRow({
+  clock,
+  now,
+  hour12,
+  onRemove,
+  compact = false,
+}: {
+  clock: Clock;
+  now: Date;
+  hour12: boolean;
+  onRemove: () => void;
+  compact?: boolean;
+}) {
+  const time = formatTimeInZone(clock.timezone, now, { hour12, seconds: true });
+  const date = formatDateInZone(clock.timezone, now);
+  const offset = getOffsetLabel(clock.timezone, now);
+
+  return (
+    <div
+      className={cn(
+        "group flex items-center justify-between gap-4 rounded-lg border border-border bg-card px-4 py-3",
+        compact && "border-border/60 bg-background/40",
+      )}
+    >
+      <div className="min-w-0">
+        <div className="text-sm font-medium truncate">{clock.city}</div>
+        <div className="text-xs text-muted-foreground truncate">{clock.country}</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <div className="text-right">
+          <div className="font-mono text-xl sm:text-2xl tabular-nums tracking-tight">{time}</div>
+          <div className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
+            <span>{date}</span>
+            <span>·</span>
+            <span>{offset}</span>
+          </div>
+        </div>
+        <button
+          onClick={onRemove}
+          className="rounded-md p-1.5 text-muted-foreground opacity-0 transition hover:text-destructive group-hover:opacity-100"
+          aria-label={`Remove ${clock.city}`}
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CountryGroupRow({
+  country,
+  clocks,
+  now,
+  hour12,
+  expanded,
+  onToggle,
+  onRemove,
+}: {
+  country: string;
+  clocks: Clock[];
+  now: Date;
+  hour12: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+  onRemove: (id: string) => void;
+}) {
+  const byHour = [...clocks].sort(
+    (a, b) => getHourInZone(a.timezone, now) - getHourInZone(b.timezone, now),
+  );
+  const earliest = byHour[0];
+  const latest = byHour[byHour.length - 1];
+  const rangeLabel =
+    earliest.timezone === latest.timezone
+      ? formatTimeInZone(earliest.timezone, now, { hour12, seconds: false })
+      : `${formatTimeInZone(earliest.timezone, now, { hour12, seconds: false })} – ${formatTimeInZone(
+          latest.timezone,
+          now,
+          { hour12, seconds: false },
+        )}`;
+
+  return (
+    <Collapsible open={expanded} onOpenChange={onToggle}>
+      <div className="overflow-hidden rounded-lg border border-border bg-card">
+        <CollapsibleTrigger asChild>
+          <button className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition hover:bg-accent/40">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                  expanded && "rotate-180",
+                )}
+              />
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{country}</div>
+                <div className="text-xs text-muted-foreground">{clocks.length} timezones</div>
+              </div>
+            </div>
+            <div className="shrink-0 text-right font-mono text-sm tabular-nums text-muted-foreground">
+              {rangeLabel}
+            </div>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="space-y-2 border-t border-border bg-background/30 p-2">
+            {clocks.map((c) => (
+              <ClockRow
+                key={c.id}
+                clock={c}
+                now={now}
+                hour12={hour12}
+                onRemove={() => onRemove(c.id)}
+                compact
+              />
+            ))}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
+function TimezonePicker({ onPick }: { onPick: (tz: (typeof TIMEZONES)[number]) => void }) {
   const [q, setQ] = useState("");
   const now = new Date();
   const results = useMemo(() => {
@@ -150,9 +376,7 @@ function TimezonePicker({ onPick }: { onPick: (tz: typeof TIMEZONES[number]) => 
               <span className="min-w-0">
                 <span className="block text-sm truncate">
                   {tz.city}
-                  {tz.region && (
-                    <span className="text-muted-foreground"> · {tz.region}</span>
-                  )}
+                  {tz.region && <span className="text-muted-foreground"> · {tz.region}</span>}
                 </span>
                 <span className="block text-xs text-muted-foreground truncate">
                   {tz.country} — {tz.timezone}

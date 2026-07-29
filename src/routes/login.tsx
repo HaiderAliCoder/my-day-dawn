@@ -77,7 +77,11 @@ function LoginPage() {
   };
 
   const heading =
-    mode === "signin" ? "Sign in to your dashboard" : mode === "signup" ? "Create your account" : "Reset your password";
+    mode === "signin"
+      ? "Sign in to your dashboard"
+      : mode === "signup"
+        ? "Create your account"
+        : "Reset your password";
 
   return (
     <div className="dark min-h-screen w-full flex items-center justify-center bg-background text-foreground px-4">
