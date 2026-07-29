@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   Clapperboard,
   Image as ImageIcon,
+  Link as LinkIcon,
   Play,
   Plus,
   Shuffle,
@@ -191,12 +192,15 @@ function VideoGrid() {
 }
 
 function VideoUploadForm({ onDone }: { onDone: () => void }) {
-  const { upload, uploading, uploadError } = useMotivationalVideos();
+  const { upload, uploading, uploadError, importFromInstagram, importing, importError } =
+    useMotivationalVideos();
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [sizeError, setSizeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [igUrl, setIgUrl] = useState("");
+  const [igError, setIgError] = useState<string | null>(null);
 
   const onFileChange = (f: File | null) => {
     setSizeError(null);
@@ -220,47 +224,101 @@ function VideoUploadForm({ onDone }: { onDone: () => void }) {
     onDone();
   };
 
+  const submitInstagram = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIgError(null);
+    if (!igUrl.trim()) return;
+    const tagList = tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    try {
+      await importFromInstagram(igUrl.trim(), title.trim() || undefined, tagList);
+      onDone();
+    } catch (err) {
+      setIgError(err instanceof Error ? err.message : "Import failed.");
+    }
+  };
+
   return (
-    <form onSubmit={submit} className="space-y-4">
-      <div
-        onClick={() => inputRef.current?.click()}
-        className={cn(
-          "rounded-lg border border-dashed border-border p-6 text-center cursor-pointer hover:bg-accent/30 transition",
-          file && "border-primary/60",
+    <div className="space-y-4">
+      <form onSubmit={submit} className="space-y-4">
+        <div
+          onClick={() => inputRef.current?.click()}
+          className={cn(
+            "rounded-lg border border-dashed border-border p-6 text-center cursor-pointer hover:bg-accent/30 transition",
+            file && "border-primary/60",
+          )}
+        >
+          <Upload className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
+          <p className="text-sm">{file ? file.name : "Click to choose a video (max 10MB)"}</p>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="video/mp4,video/webm,video/quicktime"
+            className="hidden"
+            onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
+          />
+        </div>
+        {sizeError && <p className="text-xs text-destructive">{sizeError}</p>}
+
+        <div className="relative py-1">
+          <div className="absolute inset-0 flex items-center">
+            <span className="w-full border-t border-border" />
+          </div>
+          <div className="relative flex justify-center">
+            <span className="bg-card px-2 text-xs text-muted-foreground">or paste a link</span>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={igUrl}
+              onChange={(e) => setIgUrl(e.target.value)}
+              placeholder="instagram.com/reel/…"
+              className="pl-9 bg-background"
+            />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!igUrl.trim() || importing}
+            onClick={submitInstagram}
+          >
+            {importing ? "Importing…" : "Import"}
+          </Button>
+        </div>
+        {igError && <p className="text-xs text-destructive">{igError}</p>}
+        {importError && !igError && (
+          <p className="text-xs text-destructive">{importError.message}</p>
         )}
-      >
-        <Upload className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
-        <p className="text-sm">{file ? file.name : "Click to choose a video (max 10MB)"}</p>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="video/mp4,video/webm,video/quicktime"
-          className="hidden"
-          onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
+        <p className="text-xs text-muted-foreground">
+          Public reels/posts only — this pulls the clip straight into your library so you don't
+          need a separate download step.
+        </p>
+
+        <Input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Title"
+          className="bg-background"
         />
-      </div>
-      {sizeError && <p className="text-xs text-destructive">{sizeError}</p>}
+        <Input
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+          placeholder="Tags, comma separated (optional) — e.g. discipline, faith"
+          className="bg-background"
+        />
 
-      <Input
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        placeholder="Title"
-        className="bg-background"
-        required
-      />
-      <Input
-        value={tags}
-        onChange={(e) => setTags(e.target.value)}
-        placeholder="Tags, comma separated (optional) — e.g. discipline, faith"
-        className="bg-background"
-      />
+        {uploadError && <p className="text-xs text-destructive">{uploadError.message}</p>}
 
-      {uploadError && <p className="text-xs text-destructive">{uploadError.message}</p>}
-
-      <Button type="submit" disabled={!file || !title.trim() || uploading} className="w-full">
-        {uploading ? "Uploading…" : "Add clip"}
-      </Button>
-    </form>
+        <Button type="submit" disabled={!file || !title.trim() || uploading} className="w-full">
+          {uploading ? "Uploading…" : "Add clip from file"}
+        </Button>
+      </form>
+    </div>
   );
 }
 

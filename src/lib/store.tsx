@@ -857,6 +857,27 @@ export function useMotivationalVideos() {
       ),
   });
 
+  const importInstagramMutation = useMutation({
+    mutationFn: async ({
+      url,
+      title,
+      tags,
+    }: {
+      url: string;
+      title?: string;
+      tags: string[];
+    }) => {
+      const { data, error } = await supabase.functions.invoke("import-instagram-video", {
+        body: { url, title, tags },
+      });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      return rowToVideo(data.video as MotivationalVideoRow);
+    },
+    onSuccess: (video) =>
+      queryClient.setQueryData<MotivationalVideo[]>(queryKey, (old) => [video, ...(old ?? [])]),
+  });
+
   return {
     videos,
     isLoading: query.isLoading,
@@ -864,6 +885,10 @@ export function useMotivationalVideos() {
       uploadMutation.mutateAsync({ file, title, tags }),
     uploading: uploadMutation.isPending,
     uploadError: uploadMutation.error as Error | null,
+    importFromInstagram: (url: string, title?: string, tags: string[] = []) =>
+      importInstagramMutation.mutateAsync({ url, title, tags }),
+    importing: importInstagramMutation.isPending,
+    importError: importInstagramMutation.error as Error | null,
     remove: (video: MotivationalVideo) => removeMutation.mutate(video),
     /** Signed URL, valid 1 hour — bucket is private, so this is required to play/view. */
     getPlaybackUrl: async (storagePath: string): Promise<string | null> => {
