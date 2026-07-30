@@ -94,5 +94,17 @@
     color: var(--color-foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    /* Prevent the rubber-band overscroll bounce that feels wrong inside a
+       native app shell (Capacitor/Android WebView). */
+    overscroll-behavior: none;
+  }
+  /* Native app shell (Capacitor) only: keep content clear of the status bar
+     and the 3-button/gesture nav bar. env() resolves to 0 in a normal
+     browser tab, so this is a no-op on the web version. */
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 }
