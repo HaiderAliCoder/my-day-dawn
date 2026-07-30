@@ -16,6 +16,32 @@ function json(body: unknown, status = 200) {
   });
 }
 
+/** Instagram's og:title is HTML-entity-encoded — decode named entities plus
+ *  numeric/hex ones (e.g. &#x2019; for a curly apostrophe), which show up a
+ *  lot in real captions. */
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&amp;/g, "&");
+}
+
+/** og:title is the whole caption (often several sentences + hashtags),
+ *  wrapped as `Account on Instagram: "caption..."`. Turn that into a short,
+ *  usable default title — the user can still edit it before saving. */
+function shortTitleFromCaption(raw: string): string {
+  const unwrapped = raw.replace(/^.*? on Instagram:\s*"?/, "").replace(/"$/, "");
+  const firstLine = unwrapped.split("\n")[0].trim();
+  const noHashtags = firstLine.replace(/#\S+/g, "").trim();
+  const base = noHashtags || firstLine || raw;
+  return base.length > 80 ? base.slice(0, 77).trimEnd() + "…" : base;
+}
+
 function isValidInstagramUrl(raw: string): URL | null {
   try {
     const url = new URL(raw);
@@ -49,7 +75,7 @@ async function fetchVideoUrl(postUrl: string): Promise<{ videoUrl: string; capti
   }
   const html = await res.text();
   const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/);
-  const caption = titleMatch?.[1];
+  const caption = titleMatch ? shortTitleFromCaption(decodeHtmlEntities(titleMatch[1])) : undefined;
 
   const ogMatch =
     html.match(/<meta property="og:video:secure_url" content="([^"]+)"/) ??

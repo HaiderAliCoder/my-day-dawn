@@ -4,6 +4,7 @@ import {
   Clapperboard,
   Image as ImageIcon,
   Link as LinkIcon,
+  Pencil,
   Play,
   Plus,
   Shuffle,
@@ -118,8 +119,10 @@ function MotivationPage() {
 // ---------------------------------------------------------------------------
 
 function VideoGrid() {
-  const { videos, isLoading, remove, getPlaybackUrl, pickRandom } = useMotivationalVideos();
+  const { videos, isLoading, remove, update, getPlaybackUrl, pickRandom } =
+    useMotivationalVideos();
   const [player, setPlayer] = useState<{ title: string; url: string } | null>(null);
+  const [editing, setEditing] = useState<MotivationalVideo | null>(null);
 
   const openPlayer = async (video: MotivationalVideo) => {
     const url = await getPlaybackUrl(video.storagePath);
@@ -155,13 +158,22 @@ function VideoGrid() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {videos.map((v) => (
           <div key={v.id} className="group rounded-xl border border-border bg-card p-4 relative">
-            <button
-              onClick={() => remove(v)}
-              className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
-              aria-label="Delete video"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
+            <div className="absolute top-3 right-3 flex items-center gap-1">
+              <button
+                onClick={() => setEditing(v)}
+                className="text-muted-foreground hover:text-foreground transition p-1"
+                aria-label="Edit title and tags"
+              >
+                <Pencil className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => remove(v)}
+                className="text-destructive hover:text-destructive/80 transition p-1"
+                aria-label="Delete video"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
             <button
               onClick={() => openPlayer(v)}
               className="w-full flex flex-col items-start gap-3 text-left"
@@ -170,7 +182,9 @@ function VideoGrid() {
                 <Play className="h-4 w-4 ml-0.5" />
               </span>
               <span>
-                <span className="block text-sm font-medium truncate max-w-[14rem]">{v.title}</span>
+                <span className="block text-sm font-medium truncate max-w-[14rem] pr-10">
+                  {v.title}
+                </span>
                 {v.tags.length > 0 && (
                   <span className="block text-xs text-muted-foreground mt-0.5 truncate max-w-[14rem]">
                     {v.tags.join(" · ")}
@@ -187,12 +201,98 @@ function VideoGrid() {
           <video src={player.url} controls autoPlay className="w-full rounded-md max-h-[70vh]" />
         </Lightbox>
       )}
+
+      {editing && (
+        <EditVideoDialog
+          video={editing}
+          onSave={async (title, tags) => {
+            await update(editing.id, title, tags);
+            setEditing(null);
+          }}
+          onCancel={() => setEditing(null)}
+        />
+      )}
     </>
   );
 }
 
+/** Shared title+tags edit form — used both for editing an existing clip
+ *  and as the "confirm before saving" step right after an Instagram import. */
+function EditVideoDialog({
+  video,
+  onSave,
+  onCancel,
+  onDiscard,
+  saveLabel = "Save",
+}: {
+  video: { title: string; tags: string[] };
+  onSave: (title: string, tags: string[]) => Promise<void>;
+  onCancel: () => void;
+  onDiscard?: () => void;
+  saveLabel?: string;
+}) {
+  const [title, setTitle] = useState(video.title);
+  const [tags, setTags] = useState(video.tags.join(", "));
+  const [saving, setSaving] = useState(false);
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    setSaving(true);
+    const tagList = tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    await onSave(title.trim(), tagList);
+    setSaving(false);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+      onClick={onCancel}
+    >
+      <form
+        onSubmit={save}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm rounded-xl bg-card border border-border p-5 space-y-4"
+      >
+        <h3 className="text-sm font-medium">Edit clip</h3>
+        <Input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Title"
+          className="bg-background"
+          autoFocus
+        />
+        <Input
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+          placeholder="Tags, comma separated — e.g. discipline, faith"
+          className="bg-background"
+        />
+        <div className="flex items-center gap-2 pt-1">
+          <Button type="submit" disabled={!title.trim() || saving} className="flex-1">
+            {saving ? "Saving…" : saveLabel}
+          </Button>
+          {onDiscard && (
+            <Button type="button" variant="outline" onClick={onDiscard} className="text-destructive">
+              Discard
+            </Button>
+          )}
+          {!onDiscard && (
+            <Button type="button" variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function VideoUploadForm({ onDone }: { onDone: () => void }) {
-  const { upload, uploading, uploadError, importFromInstagram, importing, importError } =
+  const { upload, uploading, uploadError, importFromInstagram, importing, importError, remove, update } =
     useMotivationalVideos();
   const [title, setTitle] = useState("");
   const [tags, setTags] = useState("");
@@ -201,6 +301,7 @@ function VideoUploadForm({ onDone }: { onDone: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [igUrl, setIgUrl] = useState("");
   const [igError, setIgError] = useState<string | null>(null);
+  const [imported, setImported] = useState<MotivationalVideo | null>(null);
 
   const onFileChange = (f: File | null) => {
     setSizeError(null);
@@ -240,12 +341,40 @@ function VideoUploadForm({ onDone }: { onDone: () => void }) {
       .map((t) => t.trim())
       .filter(Boolean);
     try {
-      await importFromInstagram(trimmed, title.trim() || undefined, tagList);
-      onDone();
+      // Import downloads the clip into your library right away (that part
+      // can't be undone without a delete), but we don't treat it as
+      // "finished" yet — the review step below is the actual confirm point:
+      // fix the auto-filled title/tags, or discard it entirely.
+      const video = await importFromInstagram(trimmed, title.trim() || undefined, tagList);
+      setImported(video);
     } catch (err) {
       setIgError(err instanceof Error ? err.message : "Import failed.");
     }
   };
+
+  if (imported) {
+    return (
+      <div className="space-y-4">
+        <p className="text-xs text-muted-foreground">
+          Imported. Review the title and tags below, then save — or discard it if it's not the
+          right clip.
+        </p>
+        <EditVideoDialog
+          video={imported}
+          saveLabel="Save to library"
+          onSave={async (t, tg) => {
+            await update(imported.id, t, tg);
+            onDone();
+          }}
+          onCancel={onDone}
+          onDiscard={async () => {
+            await remove(imported);
+            onDone();
+          }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -383,7 +512,7 @@ function ImageGrid() {
           >
             <button
               onClick={() => remove(img)}
-              className="absolute top-2 right-2 z-10 p-1 rounded-md bg-background/80 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
+              className="absolute top-2 right-2 z-10 p-1 rounded-md bg-background/80 text-destructive hover:text-destructive/80 transition"
               aria-label="Delete picture"
             >
               <Trash2 className="h-3.5 w-3.5" />
