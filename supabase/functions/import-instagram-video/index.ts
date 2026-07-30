@@ -28,13 +28,14 @@ function isValidInstagramUrl(raw: string): URL | null {
 }
 
 /**
- * Tries several public extraction paths, in order of how "intended for
- * public consumption" they are:
- *  1. og:video meta tag — what Instagram sends to link-preview crawlers
- *     (Facebook, Slack, iMessage, etc). Works for some posts.
- *  2. video_url field embedded in the page's own JSON payload — the
- *     same data the web client itself reads to play the video, present
- *     in the server-rendered HTML for public posts.
+ * Tries several public extraction paths against Instagram's public page
+ * HTML for a post/reel:
+ *  1. og:video meta tag — served to link-preview crawlers on some posts.
+ *  2. "video_url":"..." plain JSON field — present on some post types.
+ *  3. Generic search for any quoted .mp4 CDN URL embedded anywhere in the
+ *     page's bundled JSON, regardless of key name — this is what modern
+ *     Reels pages actually contain, with slashes JSON-escaped (\/) and
+ *     query-string ampersands HTML-entity-encoded (&amp;).
  */
 async function fetchVideoUrl(postUrl: string): Promise<{ videoUrl: string; caption?: string; debug: string }> {
   const res = await fetch(postUrl, {
@@ -86,8 +87,20 @@ async function fetchVideoUrl(postUrl: string): Promise<{ videoUrl: string; capti
     return { videoUrl: decoded, caption, debug: "video_url json (attempt 2)" };
   }
 
-  console.log("extraction failed. html1 length", html.length, "html2 length", html2.length);
-  console.log("html1 sample", html.slice(0, 500));
+  // Generic fallback: grab any quoted string containing a CDN .mp4 URL,
+  // regardless of which JSON key it's under. Decode the \/ (JSON escape)
+  // and &amp; (HTML entity) encodings Instagram wraps the URL in.
+  const mp4Match =
+    html2.match(/"(https:\\\/\\\/[^"]*?\.mp4[^"]*?)"/) ??
+    html.match(/"(https:\\\/\\\/[^"]*?\.mp4[^"]*?)"/);
+  if (mp4Match) {
+    const decoded = mp4Match[1]
+      .replace(/\\\//g, "/")
+      .replace(/&amp;/g, "&")
+      .replace(/\\u0026/g, "&");
+    return { videoUrl: decoded, caption, debug: "mp4 regex" };
+  }
+
   throw new Error(
     "Couldn't find a video on that link. Instagram may be blocking automated access to this post right now — make sure it's public, or try downloading it manually and uploading the file instead.",
   );
