@@ -291,38 +291,35 @@ function EditVideoDialog({
   );
 }
 
+type PendingVideo =
+  | { kind: "file"; file: File; previewUrl: string }
+  | { kind: "instagram"; video: MotivationalVideo; previewUrl: string };
+
 function VideoUploadForm({ onDone }: { onDone: () => void }) {
-  const { upload, uploading, uploadError, importFromInstagram, importing, importError, remove, update } =
+  const { upload, uploadError, importFromInstagram, importing, importError, remove, update, getPlaybackUrl } =
     useMotivationalVideos();
-  const [title, setTitle] = useState("");
-  const [tags, setTags] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [sizeError, setSizeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [igUrl, setIgUrl] = useState("");
   const [igError, setIgError] = useState<string | null>(null);
-  const [imported, setImported] = useState<MotivationalVideo | null>(null);
+  const [pending, setPending] = useState<PendingVideo | null>(null);
+  const [title, setTitle] = useState("");
+  const [tags, setTags] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const onFileChange = (f: File | null) => {
     setSizeError(null);
-    if (f && f.size > MAX_VIDEO_BYTES) {
+    if (!f) return;
+    if (f.size > MAX_VIDEO_BYTES) {
       setSizeError("That file is over 10MB — trim it down or pick a shorter clip.");
       setFile(null);
       return;
     }
     setFile(f);
-    if (f && !title) setTitle(f.name.replace(/\.[^/.]+$/, ""));
-  };
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!file || !title.trim()) return;
-    const tagList = tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    await upload(file, title.trim(), tagList);
-    onDone();
+    setTitle(f.name.replace(/\.[^/.]+$/, ""));
+    setTags("");
+    setPending({ kind: "file", file: f, previewUrl: URL.createObjectURL(f) });
   };
 
   const submitInstagram = async (e: React.FormEvent) => {
@@ -336,110 +333,77 @@ function VideoUploadForm({ onDone }: { onDone: () => void }) {
       );
       return;
     }
-    const tagList = tags
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
     try {
-      // Import downloads the clip into your library right away (that part
-      // can't be undone without a delete), but we don't treat it as
-      // "finished" yet — the review step below is the actual confirm point:
-      // fix the auto-filled title/tags, or discard it entirely.
-      const video = await importFromInstagram(trimmed, title.trim() || undefined, tagList);
-      setImported(video);
+      // The clip has to actually be downloaded server-side to know it's
+      // valid, so this does land in storage right away — but it isn't
+      // "finished" until Add is tapped below. Remove deletes it again.
+      const video = await importFromInstagram(trimmed);
+      const url = await getPlaybackUrl(video.storagePath);
+      setTitle(video.title);
+      setTags(video.tags.join(", "));
+      setPending({ kind: "instagram", video, previewUrl: url ?? "" });
     } catch (err) {
       setIgError(err instanceof Error ? err.message : "Import failed.");
     }
   };
 
-  if (imported) {
+  const clearPending = async (deleteFromServer: boolean) => {
+    if (pending?.kind === "file") {
+      URL.revokeObjectURL(pending.previewUrl);
+    }
+    if (deleteFromServer && pending?.kind === "instagram") {
+      await remove(pending.video);
+    }
+    setPending(null);
+    setFile(null);
+    setIgUrl("");
+    setTitle("");
+    setTags("");
+  };
+
+  const confirmAdd = async () => {
+    if (!pending || !title.trim()) return;
+    const tagList = tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    setSaving(true);
+    try {
+      if (pending.kind === "file") {
+        await upload(pending.file, title.trim(), tagList);
+      } else {
+        await update(pending.video.id, title.trim(), tagList);
+      }
+      onDone();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (pending) {
     return (
       <div className="space-y-4">
-        <p className="text-xs text-muted-foreground">
-          Imported. Review the title and tags below, then save — or discard it if it's not the
-          right clip.
-        </p>
-        <EditVideoDialog
-          video={imported}
-          saveLabel="Save to library"
-          onSave={async (t, tg) => {
-            await update(imported.id, t, tg);
-            onDone();
-          }}
-          onCancel={onDone}
-          onDiscard={async () => {
-            await remove(imported);
-            onDone();
-          }}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <form onSubmit={submit} className="space-y-4">
-        <div
-          onClick={() => inputRef.current?.click()}
-          className={cn(
-            "rounded-lg border border-dashed border-border p-6 text-center cursor-pointer hover:bg-accent/30 transition",
-            file && "border-primary/60",
-          )}
-        >
-          <Upload className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
-          <p className="text-sm">{file ? file.name : "Click to choose a video (max 10MB)"}</p>
-          <input
-            ref={inputRef}
-            type="file"
-            accept="video/mp4,video/webm,video/quicktime"
-            className="hidden"
-            onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
-          />
-        </div>
-        {sizeError && <p className="text-xs text-destructive">{sizeError}</p>}
-
-        <div className="relative py-1">
-          <div className="absolute inset-0 flex items-center">
-            <span className="w-full border-t border-border" />
-          </div>
-          <div className="relative flex justify-center">
-            <span className="bg-card px-2 text-xs text-muted-foreground">or paste a link</span>
-          </div>
-        </div>
-
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              value={igUrl}
-              onChange={(e) => setIgUrl(e.target.value)}
-              placeholder="instagram.com/reel/…"
-              className="pl-9 bg-background"
+        <div className="rounded-lg overflow-hidden border border-border bg-background">
+          {pending.previewUrl ? (
+            <video
+              src={pending.previewUrl}
+              controls
+              className="w-full max-h-72 bg-black"
+              preload="metadata"
             />
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!igUrl.trim() || importing}
-            onClick={submitInstagram}
-          >
-            {importing ? "Importing…" : "Import"}
-          </Button>
+          ) : (
+            <div className="p-6 text-center text-sm text-muted-foreground">
+              Preview unavailable — you can still add it.
+            </div>
+          )}
         </div>
-        {igError && <p className="text-xs text-destructive">{igError}</p>}
-        {importError && !igError && (
-          <p className="text-xs text-destructive">{importError.message}</p>
-        )}
-        <p className="text-xs text-muted-foreground">
-          Public reels/posts only — this pulls the clip straight into your library so you don't
-          need a separate download step.
-        </p>
 
         <Input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Title"
           className="bg-background"
+          autoFocus
         />
         <Input
           value={tags}
@@ -448,12 +412,81 @@ function VideoUploadForm({ onDone }: { onDone: () => void }) {
           className="bg-background"
         />
 
-        {uploadError && <p className="text-xs text-destructive">{uploadError.message}</p>}
+        {uploadError && pending.kind === "file" && (
+          <p className="text-xs text-destructive">{uploadError.message}</p>
+        )}
 
-        <Button type="submit" disabled={!file || !title.trim() || uploading} className="w-full">
-          {uploading ? "Uploading…" : "Add clip from file"}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            onClick={confirmAdd}
+            disabled={!title.trim() || saving}
+            className="flex-1"
+          >
+            <Plus className="h-4 w-4 mr-1.5" />
+            {saving ? "Adding…" : "Add"}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => clearPending(true)}
+            className="flex-1 text-destructive"
+          >
+            <X className="h-4 w-4 mr-1.5" />
+            Remove
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div
+        onClick={() => inputRef.current?.click()}
+        className="rounded-lg border border-dashed border-border p-6 text-center cursor-pointer hover:bg-accent/30 transition"
+      >
+        <Upload className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
+        <p className="text-sm">Click to choose a video (max 10MB)</p>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="video/mp4,video/webm,video/quicktime"
+          className="hidden"
+          onChange={(e) => onFileChange(e.target.files?.[0] ?? null)}
+        />
+      </div>
+      {sizeError && <p className="text-xs text-destructive">{sizeError}</p>}
+
+      <div className="relative py-1">
+        <div className="absolute inset-0 flex items-center">
+          <span className="w-full border-t border-border" />
+        </div>
+        <div className="relative flex justify-center">
+          <span className="bg-card px-2 text-xs text-muted-foreground">or paste a link</span>
+        </div>
+      </div>
+
+      <form onSubmit={submitInstagram} className="flex gap-2">
+        <div className="relative flex-1">
+          <LinkIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            value={igUrl}
+            onChange={(e) => setIgUrl(e.target.value)}
+            placeholder="instagram.com/reel/…"
+            className="pl-9 bg-background"
+          />
+        </div>
+        <Button type="submit" variant="outline" disabled={!igUrl.trim() || importing}>
+          {importing ? "Importing…" : "Import"}
         </Button>
       </form>
+      {igError && <p className="text-xs text-destructive">{igError}</p>}
+      {importError && !igError && <p className="text-xs text-destructive">{importError.message}</p>}
+      <p className="text-xs text-muted-foreground">
+        Public reels/posts only. Either way, you'll get a preview with title and tags to confirm
+        before it's added.
+      </p>
     </div>
   );
 }
