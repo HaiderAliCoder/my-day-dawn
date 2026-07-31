@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/lib/auth";
@@ -1063,7 +1064,9 @@ export interface FocusSession {
   id: string;
   taskId?: string;
   plannedMinutes: number;
+  plannedSeconds?: number;
   startedAt: number;
+  pausedAt?: number;
   endedAt?: number;
   completed: boolean;
 }
@@ -1072,7 +1075,9 @@ interface FocusSessionRow {
   id: string;
   task_id: string | null;
   planned_minutes: number;
+  planned_seconds: number | null;
   started_at: string;
+  paused_at: string | null;
   ended_at: string | null;
   completed: boolean;
 }
@@ -1082,7 +1087,9 @@ function rowToSession(row: FocusSessionRow): FocusSession {
     id: row.id,
     taskId: row.task_id ?? undefined,
     plannedMinutes: row.planned_minutes,
+    plannedSeconds: row.planned_seconds ?? undefined,
     startedAt: new Date(row.started_at).getTime(),
+    pausedAt: row.paused_at ? new Date(row.paused_at).getTime() : undefined,
     endedAt: row.ended_at ? new Date(row.ended_at).getTime() : undefined,
     completed: row.completed,
   };
@@ -1110,14 +1117,44 @@ export function useFocusSessions() {
 
   const sessions = query.data ?? [];
 
+  // The database, not any single device, is the source of truth for "is a
+  // session currently running" — this is what lets the phone app and the
+  // web tab (or any other device) agree on the same state instead of each
+  // one happily starting its own independent timer. `sessions` is already
+  // ordered newest-first, so the first row without an ended_at is the one
+  // active session (starting a second one is blocked in the UI whenever
+  // this is non-null).
+  const activeSession = sessions.find((s) => s.endedAt === undefined);
+
+  // Keep every device in sync in near-real-time: any insert/update to this
+  // user's focus_sessions (pause, resume, finish, a new session starting on
+  // another device) invalidates the query here so it refetches. This is the
+  // actual cross-device sync mechanism — localStorage alone can never do
+  // this since it's local to a single browser/app installation.
+  useEffect(() => {
+    if (!userId) return;
+    const channel = supabase
+      .channel(`focus_sessions_sync_${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "focus_sessions", filter: `user_id=eq.${userId}` },
+        () => queryClient.invalidateQueries({ queryKey }),
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [userId, queryClient, queryKey]);
+
   const startMutation = useMutation({
-    mutationFn: async ({ taskId, plannedMinutes }: { taskId?: string; plannedMinutes: number }) => {
+    mutationFn: async ({ taskId, plannedSeconds }: { taskId?: string; plannedSeconds: number }) => {
       const { data, error } = await supabase
         .from("focus_sessions")
         .insert({
           user_id: userId,
           task_id: taskId ?? null,
-          planned_minutes: plannedMinutes,
+          planned_minutes: Math.max(1, Math.round(plannedSeconds / 60)),
+          planned_seconds: plannedSeconds,
         })
         .select("*")
         .single();
@@ -1126,6 +1163,54 @@ export function useFocusSessions() {
     },
     onSuccess: (session) =>
       queryClient.setQueryData<FocusSession[]>(queryKey, (old) => [session, ...(old ?? [])]),
+  });
+
+  const pauseMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const pausedAtIso = new Date().toISOString();
+      const { data, error } = await supabase
+        .from("focus_sessions")
+        .update({ paused_at: pausedAtIso })
+        .eq("id", id)
+        .select("*")
+        .single();
+      if (error) throw error;
+      return rowToSession(data as FocusSessionRow);
+    },
+    onMutate: async (id) =>
+      queryClient.setQueryData<FocusSession[]>(queryKey, (old) =>
+        (old ?? []).map((s) => (s.id === id ? { ...s, pausedAt: Date.now() } : s)),
+      ),
+    onSuccess: (session) =>
+      queryClient.setQueryData<FocusSession[]>(queryKey, (old) =>
+        (old ?? []).map((s) => (s.id === session.id ? session : s)),
+      ),
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const current = (queryClient.getQueryData<FocusSession[]>(queryKey) ?? []).find(
+        (s) => s.id === id,
+      );
+      if (!current?.pausedAt) throw new Error("Session is not paused");
+      // Shift started_at forward by however long it sat paused, so the
+      // remaining time (plannedSeconds - elapsed) is preserved exactly —
+      // no separate "remaining seconds" field needed anywhere.
+      const pausedDurationMs = Date.now() - current.pausedAt;
+      const newStartedAtIso = new Date(current.startedAt + pausedDurationMs).toISOString();
+      const { data, error } = await supabase
+        .from("focus_sessions")
+        .update({ started_at: newStartedAtIso, paused_at: null })
+        .eq("id", id)
+        .select("*")
+        .single();
+      if (error) throw error;
+      return rowToSession(data as FocusSessionRow);
+    },
+    onSuccess: (session) =>
+      queryClient.setQueryData<FocusSession[]>(queryKey, (old) =>
+        (old ?? []).map((s) => (s.id === session.id ? session : s)),
+      ),
   });
 
   const finishMutation = useMutation({
@@ -1146,8 +1231,11 @@ export function useFocusSessions() {
 
   return {
     sessions,
-    start: (taskId: string | undefined, plannedMinutes: number) =>
-      startMutation.mutateAsync({ taskId, plannedMinutes }),
+    activeSession,
+    start: (taskId: string | undefined, plannedSeconds: number) =>
+      startMutation.mutateAsync({ taskId, plannedSeconds }),
+    pause: (id: string) => pauseMutation.mutateAsync(id),
+    resume: (id: string) => resumeMutation.mutateAsync(id),
     finish: (id: string, completed: boolean) => finishMutation.mutate({ id, completed }),
     todayCompletedCount,
   };

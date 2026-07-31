@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useFocusSessions, useMotivationalVideos, type FocusSession, type Task } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-const PRESETS = [15, 25, 50];
+const PRESET_MINUTES = [15, 25, 50];
 const DEFAULT_MINUTES = 25;
 const APP_TITLE = "My Day Dawn";
 
@@ -45,233 +45,153 @@ function notifyCompletion(label: string) {
   }
 }
 
+function requestNotificationPermission() {
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
+}
+
 function formatClock(totalSeconds: number) {
-  const s = Math.max(0, totalSeconds);
-  const mm = String(Math.floor(s / 60)).padStart(2, "0");
-  const ss = String(s % 60).padStart(2, "0");
-  return `${mm}:${ss}`;
-}
-
-// --- Active-session persistence -------------------------------------------
-// A running timer only lives in React state by default, which is wiped the
-// instant the app process is killed (swiped away / force-closed). The
-// Supabase auth session survives that because it's written to localStorage;
-// we do the same thing here so a running focus session survives a full app
-// kill and rehydrates with the correct remaining time on reopen, instead of
-// silently vanishing and leaving an orphaned "never finished" row behind.
-const ACTIVE_SESSION_KEY = "focus-session:active";
-
-interface PersistedSession {
-  sessionId: string;
-  taskId: string | undefined;
-  minutes: number;
-  endsAt: number | null;
-  pausedSecondsLeft: number | null;
-}
-
-function saveActiveSession(state: PersistedSession) {
-  try {
-    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(state));
-  } catch {
-    // Storage unavailable (e.g. private mode) — session just won't survive
-    // a kill in that case, timer still works normally otherwise.
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   }
+  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-function clearActiveSession() {
-  try {
-    localStorage.removeItem(ACTIVE_SESSION_KEY);
-  } catch {
-    // ignore
-  }
+/** Compact "1h 5m", "25 min", "45s" style label for buttons/history rows. */
+function formatDuration(totalSeconds: number) {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  if (sec > 0 && h === 0) parts.push(`${sec}s`);
+  return parts.length > 0 ? parts.join(" ") : "0s";
 }
 
-function loadActiveSession(): PersistedSession | null {
-  try {
-    const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PersistedSession>;
-    if (typeof parsed.sessionId !== "string" || typeof parsed.minutes !== "number") return null;
-    return {
-      sessionId: parsed.sessionId,
-      taskId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
-      minutes: parsed.minutes,
-      endsAt: typeof parsed.endsAt === "number" ? parsed.endsAt : null,
-      pausedSecondsLeft: typeof parsed.pausedSecondsLeft === "number" ? parsed.pausedSecondsLeft : null,
-    };
-  } catch {
-    return null;
-  }
+/** The exact planned duration for a session, in seconds — falls back to the
+ * legacy whole-minutes field for sessions created before seconds-precision
+ * existed. */
+function sessionPlannedSeconds(session: FocusSession) {
+  return session.plannedSeconds ?? session.plannedMinutes * 60;
 }
 
 /**
  * "Start Focus Now": picks (or lets you pick) a task, plays a random
  * motivational clip as a pre-session gate if any are uploaded, then runs a
- * wall-clock-accurate countdown (immune to setInterval drift/throttling)
- * and logs the session on finish/cancel.
+ * wall-clock-accurate countdown and logs the session on finish/cancel.
+ *
+ * The running/paused state itself is NOT local — it's derived entirely from
+ * `activeSession`, which comes from the database and is kept in sync across
+ * every device in real time. That's deliberate: a running session has to be
+ * a single, server-side fact everyone agrees on, otherwise two devices can
+ * each start their own independent timer with no idea the other exists.
  */
 export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
-  const { sessions, start, finish, todayCompletedCount } = useFocusSessions();
+  const { sessions, activeSession, start, pause, resume, finish, todayCompletedCount } =
+    useFocusSessions();
   const { videos, pickRandom, getPlaybackUrl } = useMotivationalVideos();
 
-  // Read any active session left over from before the app was closed, once,
-  // on first render — this is what lets a killed-and-reopened app pick the
-  // timer back up instead of losing it.
-  const [restored] = useState(() => loadActiveSession());
-
-  const [stage, setStage] = useState<"idle" | "gate" | "running">(restored ? "running" : "idle");
-  const [taskId, setTaskId] = useState<string | undefined>(restored?.taskId);
-  const [minutes, setMinutes] = useState(restored?.minutes ?? DEFAULT_MINUTES);
-  const [customMinutes, setCustomMinutes] = useState("");
-  const [sessionId, setSessionId] = useState<string | null>(restored?.sessionId ?? null);
+  const [localStage, setLocalStage] = useState<"idle" | "gate">("idle");
+  const [taskId, setTaskId] = useState<string | undefined>(undefined);
+  const [hours, setHours] = useState(0);
+  const [durationMinutes, setDurationMinutes] = useState(DEFAULT_MINUTES);
+  const [seconds, setSeconds] = useState(0);
   const [gateUrl, setGateUrl] = useState<string | null>(null);
-
-  // Wall-clock based countdown state. `endsAt` is the absolute timestamp the
-  // session should finish at; while paused it's null and `pausedSecondsLeft`
-  // holds the frozen remaining time instead. Deriving the displayed seconds
-  // from `endsAt` (rather than decrementing a counter every tick) means the
-  // timer self-corrects if the browser throttles background tabs and never
-  // drifts from real elapsed time — including the "background tab" that
-  // happens while the whole app was closed.
-  const [endsAt, setEndsAt] = useState<number | null>(restored?.endsAt ?? null);
-  const [pausedSecondsLeft, setPausedSecondsLeft] = useState<number | null>(
-    restored?.pausedSecondsLeft ?? null,
-  );
   const [tick, setTick] = useState(0);
-  const finishedRef = useRef(false);
+  const finishedRef = useRef<string | null>(null);
 
   const incomplete = tasks.filter((t) => !t.completed);
+  const totalSeconds = hours * 3600 + durationMinutes * 60 + seconds;
 
   const secondsLeft = useMemo(() => {
-    if (pausedSecondsLeft !== null) return pausedSecondsLeft;
-    if (endsAt === null) return 0;
+    if (!activeSession) return 0;
+    const planned = sessionPlannedSeconds(activeSession);
+    if (activeSession.pausedAt) {
+      return planned - Math.floor((activeSession.pausedAt - activeSession.startedAt) / 1000);
+    }
+    const endsAt = activeSession.startedAt + planned * 1000;
     return Math.round((endsAt - Date.now()) / 1000);
-    // `tick` is an intentional dependency: it exists purely to force this
-    // memo to recompute every second while running.
+    // `tick` is an intentional dependency: it exists purely to force this to
+    // recompute every second while running.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [endsAt, pausedSecondsLeft, tick]);
+  }, [activeSession, tick]);
 
-  const running = stage === "running" && endsAt !== null;
+  const isPaused = !!activeSession?.pausedAt;
+  const isRunning = !!activeSession && !isPaused;
 
-  // Drive the redraw every second while actively running (not paused).
+  // Drive the redraw every second while actively counting down.
   useEffect(() => {
-    if (!running) return;
+    if (!isRunning) return;
     const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
-  }, [running]);
+  }, [isRunning]);
 
-  // Handle natural completion once the countdown reaches zero.
+  // Handle natural completion once the countdown reaches zero. Guarded by
+  // session id so this can't double-fire, and safe if another device
+  // happens to finish it first (finish() just overwrites the same fields).
   useEffect(() => {
-    if (stage !== "running" || endsAt === null) return;
-    if (secondsLeft > 0) {
-      finishedRef.current = false;
-      return;
-    }
-    if (finishedRef.current) return;
-    finishedRef.current = true;
-    if (sessionId) finish(sessionId, true);
-    notifyCompletion(`${minutes} minute session finished.`);
-    setEndsAt(null);
-    setPausedSecondsLeft(null);
-    setStage("idle");
-    setSessionId(null);
-  }, [secondsLeft, stage, endsAt, sessionId, finish, minutes]);
+    if (!activeSession || isPaused) return;
+    if (secondsLeft > 0) return;
+    if (finishedRef.current === activeSession.id) return;
+    finishedRef.current = activeSession.id;
+    finish(activeSession.id, true);
+    notifyCompletion(`${formatDuration(sessionPlannedSeconds(activeSession))} session finished.`);
+  }, [activeSession, isPaused, secondsLeft, finish]);
 
   // Live tab-title countdown so the running timer is visible even when
   // you're glancing at another tab/window.
   useEffect(() => {
-    if (stage !== "running") {
+    if (!activeSession) {
       document.title = APP_TITLE;
       return;
     }
-    document.title = `${formatClock(secondsLeft)} — Focus`;
+    document.title = `${formatClock(secondsLeft)}${isPaused ? " (paused)" : ""} — Focus`;
     return () => {
       document.title = APP_TITLE;
     };
-  }, [stage, secondsLeft]);
-
-  useEffect(() => {
-    if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
-    }
-  }, []);
-
-  // Persist (or clear) the active session on every change so the app can be
-  // fully killed and reopened without losing — or orphaning — the timer.
-  useEffect(() => {
-    if (stage === "running" && sessionId) {
-      saveActiveSession({ sessionId, taskId, minutes, endsAt, pausedSecondsLeft });
-    } else {
-      clearActiveSession();
-    }
-  }, [stage, sessionId, taskId, minutes, endsAt, pausedSecondsLeft]);
+  }, [activeSession, secondsLeft, isPaused]);
 
   const openGate = async () => {
+    requestNotificationPermission();
     const pick = pickRandom();
     if (pick) {
       const url = await getPlaybackUrl(pick.storagePath);
       setGateUrl(url);
     }
-    setStage("gate");
+    setLocalStage("gate");
   };
 
   const beginTimer = async () => {
-    const session = await start(taskId, minutes);
-    setSessionId(session.id);
-    finishedRef.current = false;
-    setPausedSecondsLeft(null);
-    setEndsAt(Date.now() + minutes * 60_000);
-    setStage("running");
+    requestNotificationPermission();
+    if (totalSeconds <= 0) return;
+    finishedRef.current = null;
+    await start(taskId, totalSeconds);
+    setLocalStage("idle");
   };
 
-  const togglePause = () => {
-    if (pausedSecondsLeft !== null) {
-      // Resuming: re-anchor to a fresh end timestamp from the frozen amount.
-      setEndsAt(Date.now() + pausedSecondsLeft * 1000);
-      setPausedSecondsLeft(null);
-    } else if (endsAt !== null) {
-      setPausedSecondsLeft(Math.max(0, Math.round((endsAt - Date.now()) / 1000)));
-      setEndsAt(null);
-    }
-  };
-
-  const cancelSession = () => {
-    if (sessionId) finish(sessionId, false);
-    setEndsAt(null);
-    setPausedSecondsLeft(null);
-    setStage("idle");
-    setSessionId(null);
-  };
-
-  const finishEarly = () => {
-    if (sessionId) finish(sessionId, true);
-    setEndsAt(null);
-    setPausedSecondsLeft(null);
-    setStage("idle");
-    setSessionId(null);
-  };
-
-  const applyCustomMinutes = () => {
-    const value = Math.round(Number(customMinutes));
-    if (Number.isFinite(value) && value > 0 && value <= 480) {
-      setMinutes(value);
-      setCustomMinutes("");
-    }
+  const applyPreset = (mins: number) => {
+    setHours(0);
+    setDurationMinutes(mins);
+    setSeconds(0);
   };
 
   const todaySessions = useMemo(() => {
     const cutoff = new Date();
     cutoff.setHours(0, 0, 0, 0);
-    return sessions
-      .filter((s) => s.startedAt >= cutoff.getTime())
-      .slice(0, 8);
+    return sessions.filter((s) => s.startedAt >= cutoff.getTime()).slice(0, 8);
   }, [sessions]);
 
-  if (stage === "running") {
-    const isPaused = pausedSecondsLeft !== null;
-    const totalSeconds = minutes * 60;
-    const progress = totalSeconds > 0 ? 1 - secondsLeft / totalSeconds : 0;
-    const activeTask = tasks.find((t) => t.id === taskId);
+  if (activeSession) {
+    const planned = sessionPlannedSeconds(activeSession);
+    const progress = planned > 0 ? 1 - secondsLeft / planned : 0;
+    const activeTask = tasks.find((t) => t.id === activeSession.taskId);
     return (
       <section className="rounded-xl border border-primary/40 bg-card p-5">
         <div className="flex items-center justify-between mb-3">
@@ -279,7 +199,7 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
             Focus session{isPaused ? " · paused" : ""}
           </h2>
           <button
-            onClick={cancelSession}
+            onClick={() => finish(activeSession.id, false)}
             className="text-muted-foreground hover:text-destructive transition"
             aria-label="Cancel session"
           >
@@ -299,7 +219,10 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
           />
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={togglePause}>
+          <Button
+            variant="outline"
+            onClick={() => (isPaused ? resume(activeSession.id) : pause(activeSession.id))}
+          >
             {isPaused ? (
               <>
                 <Play className="h-4 w-4 mr-1.5" />
@@ -312,7 +235,12 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
               </>
             )}
           </Button>
-          <Button onClick={finishEarly}>
+          <Button
+            onClick={() => {
+              finish(activeSession.id, true);
+              notifyCompletion(`${formatDuration(planned)} session finished.`);
+            }}
+          >
             <Square className="h-4 w-4 mr-1.5" />
             Done
           </Button>
@@ -321,7 +249,7 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
     );
   }
 
-  if (stage === "gate") {
+  if (localStage === "gate") {
     return (
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-center justify-between mb-3">
@@ -329,7 +257,7 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
             Before you start
           </h2>
           <button
-            onClick={() => setStage("idle")}
+            onClick={() => setLocalStage("idle")}
             className="text-muted-foreground hover:text-foreground transition"
             aria-label="Skip"
           >
@@ -344,7 +272,7 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
           </p>
         )}
         <Button onClick={beginTimer} className="w-full">
-          Start {minutes}-minute session
+          Start {formatDuration(totalSeconds)} session
         </Button>
       </section>
     );
@@ -379,14 +307,14 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
         </select>
       )}
 
-      <div className="flex gap-2 mb-2">
-        {PRESETS.map((d) => (
+      <div className="flex gap-2 mb-3">
+        {PRESET_MINUTES.map((d) => (
           <button
             key={d}
-            onClick={() => setMinutes(d)}
+            onClick={() => applyPreset(d)}
             className={cn(
               "flex-1 rounded-md border px-3 py-2 text-sm transition-colors",
-              minutes === d
+              hours === 0 && durationMinutes === d && seconds === 0
                 ? "border-primary bg-primary/10 text-primary"
                 : "border-border hover:bg-accent/40",
             )}
@@ -396,28 +324,21 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
         ))}
       </div>
 
-      <div className="flex gap-2 mb-4">
-        <input
-          type="number"
-          min={1}
-          max={480}
-          placeholder="Custom minutes"
-          value={customMinutes}
-          onChange={(e) => setCustomMinutes(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && applyCustomMinutes()}
-          className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
-        />
-        <Button variant="outline" onClick={applyCustomMinutes}>
-          Set
-        </Button>
-        {!PRESETS.includes(minutes) && (
-          <span className="self-center text-xs text-primary whitespace-nowrap px-1">
-            {minutes} min selected
-          </span>
-        )}
+      <p className="text-xs text-muted-foreground mb-1.5">Custom duration</p>
+      <div className="flex items-center gap-2 mb-4">
+        <DurationField label="h" value={hours} max={23} onChange={setHours} />
+        <DurationField label="m" value={durationMinutes} max={59} onChange={setDurationMinutes} />
+        <DurationField label="s" value={seconds} max={59} onChange={setSeconds} />
+        <span className="ml-auto text-sm text-muted-foreground whitespace-nowrap">
+          = {formatDuration(totalSeconds)}
+        </span>
       </div>
 
-      <Button onClick={videos.length > 0 ? openGate : beginTimer} className="w-full mb-4">
+      <Button
+        onClick={videos.length > 0 ? openGate : beginTimer}
+        disabled={totalSeconds <= 0}
+        className="w-full mb-4"
+      >
         <Play className="h-4 w-4 mr-1.5" />
         Start focus session
       </Button>
@@ -438,6 +359,35 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
   );
 }
 
+function DurationField({
+  label,
+  value,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="number"
+        min={0}
+        max={max}
+        value={value}
+        onChange={(e) => {
+          const n = Math.round(Number(e.target.value));
+          if (Number.isFinite(n)) onChange(Math.min(max, Math.max(0, n)));
+        }}
+        className="w-14 rounded-md border border-border bg-background px-2 py-2 text-sm text-center"
+      />
+      <span className="text-xs text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
 function TodaySessionRow({ session, tasks }: { session: FocusSession; tasks: Task[] }) {
   const task = tasks.find((t) => t.id === session.taskId);
   const time = new Date(session.startedAt).toLocaleTimeString([], {
@@ -452,7 +402,9 @@ function TodaySessionRow({ session, tasks }: { session: FocusSession; tasks: Tas
         <X className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       )}
       <span className="text-muted-foreground shrink-0">{time}</span>
-      <span className="truncate">{task ? task.title : `${session.plannedMinutes} min`}</span>
+      <span className="truncate">
+        {task ? task.title : formatDuration(sessionPlannedSeconds(session))}
+      </span>
     </li>
   );
 }
