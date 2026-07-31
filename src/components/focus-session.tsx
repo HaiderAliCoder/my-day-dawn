@@ -52,6 +52,58 @@ function formatClock(totalSeconds: number) {
   return `${mm}:${ss}`;
 }
 
+// --- Active-session persistence -------------------------------------------
+// A running timer only lives in React state by default, which is wiped the
+// instant the app process is killed (swiped away / force-closed). The
+// Supabase auth session survives that because it's written to localStorage;
+// we do the same thing here so a running focus session survives a full app
+// kill and rehydrates with the correct remaining time on reopen, instead of
+// silently vanishing and leaving an orphaned "never finished" row behind.
+const ACTIVE_SESSION_KEY = "focus-session:active";
+
+interface PersistedSession {
+  sessionId: string;
+  taskId: string | undefined;
+  minutes: number;
+  endsAt: number | null;
+  pausedSecondsLeft: number | null;
+}
+
+function saveActiveSession(state: PersistedSession) {
+  try {
+    localStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(state));
+  } catch {
+    // Storage unavailable (e.g. private mode) — session just won't survive
+    // a kill in that case, timer still works normally otherwise.
+  }
+}
+
+function clearActiveSession() {
+  try {
+    localStorage.removeItem(ACTIVE_SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function loadActiveSession(): PersistedSession | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PersistedSession>;
+    if (typeof parsed.sessionId !== "string" || typeof parsed.minutes !== "number") return null;
+    return {
+      sessionId: parsed.sessionId,
+      taskId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
+      minutes: parsed.minutes,
+      endsAt: typeof parsed.endsAt === "number" ? parsed.endsAt : null,
+      pausedSecondsLeft: typeof parsed.pausedSecondsLeft === "number" ? parsed.pausedSecondsLeft : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * "Start Focus Now": picks (or lets you pick) a task, plays a random
  * motivational clip as a pre-session gate if any are uploaded, then runs a
@@ -62,11 +114,16 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
   const { sessions, start, finish, todayCompletedCount } = useFocusSessions();
   const { videos, pickRandom, getPlaybackUrl } = useMotivationalVideos();
 
-  const [stage, setStage] = useState<"idle" | "gate" | "running">("idle");
-  const [taskId, setTaskId] = useState<string | undefined>(undefined);
-  const [minutes, setMinutes] = useState(DEFAULT_MINUTES);
+  // Read any active session left over from before the app was closed, once,
+  // on first render — this is what lets a killed-and-reopened app pick the
+  // timer back up instead of losing it.
+  const [restored] = useState(() => loadActiveSession());
+
+  const [stage, setStage] = useState<"idle" | "gate" | "running">(restored ? "running" : "idle");
+  const [taskId, setTaskId] = useState<string | undefined>(restored?.taskId);
+  const [minutes, setMinutes] = useState(restored?.minutes ?? DEFAULT_MINUTES);
   const [customMinutes, setCustomMinutes] = useState("");
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(restored?.sessionId ?? null);
   const [gateUrl, setGateUrl] = useState<string | null>(null);
 
   // Wall-clock based countdown state. `endsAt` is the absolute timestamp the
@@ -74,9 +131,12 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
   // holds the frozen remaining time instead. Deriving the displayed seconds
   // from `endsAt` (rather than decrementing a counter every tick) means the
   // timer self-corrects if the browser throttles background tabs and never
-  // drifts from real elapsed time.
-  const [endsAt, setEndsAt] = useState<number | null>(null);
-  const [pausedSecondsLeft, setPausedSecondsLeft] = useState<number | null>(null);
+  // drifts from real elapsed time — including the "background tab" that
+  // happens while the whole app was closed.
+  const [endsAt, setEndsAt] = useState<number | null>(restored?.endsAt ?? null);
+  const [pausedSecondsLeft, setPausedSecondsLeft] = useState<number | null>(
+    restored?.pausedSecondsLeft ?? null,
+  );
   const [tick, setTick] = useState(0);
   const finishedRef = useRef(false);
 
@@ -135,6 +195,16 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
       Notification.requestPermission().catch(() => {});
     }
   }, []);
+
+  // Persist (or clear) the active session on every change so the app can be
+  // fully killed and reopened without losing — or orphaning — the timer.
+  useEffect(() => {
+    if (stage === "running" && sessionId) {
+      saveActiveSession({ sessionId, taskId, minutes, endsAt, pausedSecondsLeft });
+    } else {
+      clearActiveSession();
+    }
+  }, [stage, sessionId, taskId, minutes, endsAt, pausedSecondsLeft]);
 
   const openGate = async () => {
     const pick = pickRandom();
