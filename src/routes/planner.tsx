@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, GripVertical, Plus, Trash2 } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, GripVertical, Pencil, Plus, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -116,8 +116,10 @@ function DailyView() {
 }
 
 function DayTaskList({ date, source }: { date: string; source: TaskSource }) {
-  const { tasks, add, toggle, remove, reorderSubset } = useTasks();
+  const { tasks, add, toggle, remove, update, reorderSubset } = useTasks();
   const [title, setTitle] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
   const list = useMemo(
     () =>
       tasks
@@ -133,6 +135,17 @@ function DayTaskList({ date, source }: { date: string; source: TaskSource }) {
     if (!t) return;
     add({ title: t, dueDate: date, createdIn: source });
     setTitle("");
+  };
+
+  const startEdit = (id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditValue(currentTitle);
+  };
+
+  const saveEdit = () => {
+    const t = editValue.trim();
+    if (editingId && t) update(editingId, { title: t });
+    setEditingId(null);
   };
   return (
     <section className="rounded-xl border border-border bg-card p-5">
@@ -168,21 +181,59 @@ function DayTaskList({ date, source }: { date: string; source: TaskSource }) {
               >
                 <GripVertical className="h-4 w-4 text-muted-foreground/40 cursor-grab active:cursor-grabbing shrink-0" />
                 <Checkbox checked={t.completed} onCheckedChange={() => toggle(t.id)} />
-                <span
-                  className={
-                    "flex-1 min-w-0 text-sm " +
-                    (t.completed ? "line-through text-muted-foreground" : "")
-                  }
-                >
-                  {t.title}
-                </span>
-                <button
-                  onClick={() => remove(t.id)}
-                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
-                  aria-label="Delete"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                {editingId === t.id ? (
+                  <>
+                    <Input
+                      autoFocus
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveEdit();
+                        if (e.key === "Escape") setEditingId(null);
+                      }}
+                      className="flex-1 h-8 bg-background"
+                    />
+                    <button
+                      onClick={saveEdit}
+                      className="text-muted-foreground hover:text-primary transition shrink-0"
+                      aria-label="Save"
+                    >
+                      <Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="text-muted-foreground hover:text-foreground transition shrink-0"
+                      aria-label="Cancel"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className={
+                        "flex-1 min-w-0 text-sm " +
+                        (t.completed ? "line-through text-muted-foreground" : "")
+                      }
+                    >
+                      {t.title}
+                    </span>
+                    <button
+                      onClick={() => startEdit(t.id, t.title)}
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground shrink-0"
+                      aria-label="Edit"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => remove(t.id)}
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive shrink-0"
+                      aria-label="Delete"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </>
+                )}
               </li>
             );
           })}

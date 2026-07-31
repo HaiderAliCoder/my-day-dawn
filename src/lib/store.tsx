@@ -337,6 +337,15 @@ export function useHabits() {
     onMutate: async (id) => setHabits((hs) => hs.filter((h) => h.id !== id)),
   });
 
+  const renameMutation = useMutation({
+    mutationFn: async ({ id, name }: { id: string; name: string }) => {
+      const { error } = await supabase.from("habits").update({ name }).eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async ({ id, name }) =>
+      setHabits((hs) => hs.map((h) => (h.id === id ? { ...h, name } : h))),
+  });
+
   const toggleDateMutation = useMutation({
     mutationFn: async ({
       habitId,
@@ -395,6 +404,20 @@ export function useHabits() {
       setHabits((hs) => hs.map((h) => ({ ...h, items: h.items.filter((i) => i.id !== itemId) }))),
   });
 
+  const renameItemMutation = useMutation({
+    mutationFn: async ({ itemId, label }: { itemId: string; label: string }) => {
+      const { error } = await supabase.from("habit_items").update({ label }).eq("id", itemId);
+      if (error) throw error;
+    },
+    onMutate: async ({ itemId, label }) =>
+      setHabits((hs) =>
+        hs.map((h) => ({
+          ...h,
+          items: h.items.map((i) => (i.id === itemId ? { ...i, label } : i)),
+        })),
+      ),
+  });
+
   const toggleItemDateMutation = useMutation({
     mutationFn: async ({
       itemId,
@@ -436,6 +459,7 @@ export function useHabits() {
     habits,
     add: (name: string) => addMutation.mutate(name),
     remove: (id: string) => removeMutation.mutate(id),
+    rename: (id: string, name: string) => renameMutation.mutate({ id, name }),
     /**
      * Toggle completion for any given day (not just today), so each habit
      * can have its own calendar of marked days.
@@ -447,6 +471,7 @@ export function useHabits() {
     },
     addItem: (habitId: string, label: string) => addItemMutation.mutate({ habitId, label }),
     removeItem: (itemId: string) => removeItemMutation.mutate(itemId),
+    renameItem: (itemId: string, label: string) => renameItemMutation.mutate({ itemId, label }),
     toggleItemDate: (habitId: string, itemId: string, date: string) => {
       const habit = habits.find((h) => h.id === habitId);
       const done = habit?.itemHistory[itemId]?.includes(date) ?? false;
@@ -1113,6 +1138,13 @@ export function useFocusSessions() {
       if (error) throw error;
       return (data as FocusSessionRow[]).map(rowToSession);
     },
+    // While a session is active, back the realtime subscription with a
+    // short poll too. WebSocket connections are not reliably kept alive by
+    // mobile OSes when the screen is off/backgrounded, so a socket can go
+    // silently dead — this bounds how out-of-sync a device can ever get to
+    // a few seconds, even if the push channel drops entirely.
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some((s) => s.endedAt === undefined) ? 3000 : false,
   });
 
   const sessions = query.data ?? [];
@@ -1126,23 +1158,50 @@ export function useFocusSessions() {
   // this is non-null).
   const activeSession = sessions.find((s) => s.endedAt === undefined);
 
-  // Keep every device in sync in near-real-time: any insert/update to this
-  // user's focus_sessions (pause, resume, finish, a new session starting on
-  // another device) invalidates the query here so it refetches. This is the
-  // actual cross-device sync mechanism — localStorage alone can never do
-  // this since it's local to a single browser/app installation.
+  // Keep every device in sync as close to instantly as the web platform
+  // allows: any insert/update to this user's focus_sessions (pause, resume,
+  // finish, a new session starting on another device) is applied straight
+  // into the cache the moment the event arrives — no extra refetch round
+  // trip — plus an immediate refetch whenever the app/tab regains focus, to
+  // catch up right away after being backgrounded.
   useEffect(() => {
     if (!userId) return;
     const channel = supabase
       .channel(`focus_sessions_sync_${userId}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "focus_sessions", filter: `user_id=eq.${userId}` },
-        () => queryClient.invalidateQueries({ queryKey }),
+        { event: "INSERT", schema: "public", table: "focus_sessions", filter: `user_id=eq.${userId}` },
+        (payload) => {
+          const session = rowToSession(payload.new as FocusSessionRow);
+          queryClient.setQueryData<FocusSession[]>(queryKey, (old) =>
+            (old ?? []).some((s) => s.id === session.id) ? old : [session, ...(old ?? [])],
+          );
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "focus_sessions", filter: `user_id=eq.${userId}` },
+        (payload) => {
+          const session = rowToSession(payload.new as FocusSessionRow);
+          queryClient.setQueryData<FocusSession[]>(queryKey, (old) =>
+            (old ?? []).map((s) => (s.id === session.id ? session : s)),
+          );
+        },
       )
       .subscribe();
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        queryClient.invalidateQueries({ queryKey });
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
     return () => {
       supabase.removeChannel(channel);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
   }, [userId, queryClient, queryKey]);
 

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { GripVertical, Search, Trash2, X } from "lucide-react";
+import { GripVertical, Pencil, Search, Trash2, X } from "lucide-react";
 import { PageHeader } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -247,13 +247,24 @@ function TaskRow({
             </button>
           )}
         </div>
-        <button
-          onClick={onRemove}
-          className="text-muted-foreground hover:text-destructive"
-          aria-label="Delete task"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
+        {!editing && (
+          <>
+            <button
+              onClick={() => setEditing(true)}
+              className="text-muted-foreground hover:text-foreground transition"
+              aria-label="Edit task"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+            <button
+              onClick={onRemove}
+              className="text-muted-foreground hover:text-destructive"
+              aria-label="Delete task"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </>
+        )}
       </div>
     </li>
   );

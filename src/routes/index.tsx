@@ -3,6 +3,8 @@ import { useMemo, useState } from "react";
 import {
   Plus,
   Trash2,
+  Pencil,
+  Check,
   Flame,
   GripVertical,
   CalendarDays,
@@ -57,8 +59,10 @@ function TodayFocus() {
 }
 
 function TodayTasks({ today }: { today: string }) {
-  const { tasks, add, toggle, remove, reorderSubset } = useTasks();
+  const { tasks, add, toggle, remove, update, reorderSubset } = useTasks();
   const [title, setTitle] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
 
   const todays = useMemo(
     () => tasks.filter((t) => t.dueDate === today).sort((a, b) => taskOrder(a) - taskOrder(b)),
@@ -73,6 +77,17 @@ function TodayTasks({ today }: { today: string }) {
     if (!t) return;
     add({ title: t, dueDate: today, createdIn: "today" });
     setTitle("");
+  };
+
+  const startEdit = (id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditValue(currentTitle);
+  };
+
+  const saveEdit = () => {
+    const t = editValue.trim();
+    if (editingId && t) update(editingId, { title: t });
+    setEditingId(null);
   };
 
   return (
@@ -113,22 +128,60 @@ function TodayTasks({ today }: { today: string }) {
                   onCheckedChange={() => toggle(t.id)}
                   id={`t-${t.id}`}
                 />
-                <label
-                  htmlFor={`t-${t.id}`}
-                  className={
-                    "flex-1 min-w-0 text-sm cursor-pointer " +
-                    (t.completed ? "line-through text-muted-foreground" : "")
-                  }
-                >
-                  {t.title}
-                </label>
-                <button
-                  onClick={() => remove(t.id)}
-                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition"
-                  aria-label="Delete task"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                {editingId === t.id ? (
+                  <>
+                    <Input
+                      autoFocus
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveEdit();
+                        if (e.key === "Escape") setEditingId(null);
+                      }}
+                      className="flex-1 h-8 bg-background"
+                    />
+                    <button
+                      onClick={saveEdit}
+                      className="text-muted-foreground hover:text-primary transition shrink-0"
+                      aria-label="Save"
+                    >
+                      <Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="text-muted-foreground hover:text-foreground transition shrink-0"
+                      aria-label="Cancel"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <label
+                      htmlFor={`t-${t.id}`}
+                      className={
+                        "flex-1 min-w-0 text-sm cursor-pointer " +
+                        (t.completed ? "line-through text-muted-foreground" : "")
+                      }
+                    >
+                      {t.title}
+                    </label>
+                    <button
+                      onClick={() => startEdit(t.id, t.title)}
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition shrink-0"
+                      aria-label="Edit task"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => remove(t.id)}
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition shrink-0"
+                      aria-label="Delete task"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </>
+                )}
               </li>
             );
           })}
@@ -139,12 +192,17 @@ function TodayTasks({ today }: { today: string }) {
 }
 
 function HabitTracker({ today }: { today: string }) {
-  const { habits, add, toggleDate, remove, addItem, removeItem, toggleItemDate } = useHabits();
+  const { habits, add, toggleDate, remove, rename, addItem, removeItem, renameItem, toggleItemDate } =
+    useHabits();
   const [name, setName] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [itemsOpen, setItemsOpen] = useState<Set<string>>(new Set());
   const [newItemLabel, setNewItemLabel] = useState<Record<string, string>>({});
   const [cursors, setCursors] = useState<Record<string, Date>>({});
+  const [editingHabitId, setEditingHabitId] = useState<string | null>(null);
+  const [editingHabitValue, setEditingHabitValue] = useState("");
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editingItemValue, setEditingItemValue] = useState("");
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -177,6 +235,28 @@ function HabitTracker({ today }: { today: string }) {
     if (!label) return;
     addItem(habitId, label);
     setNewItemLabel((prev) => ({ ...prev, [habitId]: "" }));
+  };
+
+  const startEditHabit = (id: string, currentName: string) => {
+    setEditingHabitId(id);
+    setEditingHabitValue(currentName);
+  };
+
+  const saveEditHabit = () => {
+    const n = editingHabitValue.trim();
+    if (editingHabitId && n) rename(editingHabitId, n);
+    setEditingHabitId(null);
+  };
+
+  const startEditItem = (id: string, currentLabel: string) => {
+    setEditingItemId(id);
+    setEditingItemValue(currentLabel);
+  };
+
+  const saveEditItem = () => {
+    const l = editingItemValue.trim();
+    if (editingItemId && l) renameItem(editingItemId, l);
+    setEditingItemId(null);
   };
 
   const monthStart = () => {
@@ -234,55 +314,93 @@ function HabitTracker({ today }: { today: string }) {
                     onCheckedChange={() => toggleDate(h.id, today)}
                     id={`h-${h.id}`}
                   />
-                  <label
-                    htmlFor={`h-${h.id}`}
-                    className={
-                      "flex-1 min-w-0 text-sm cursor-pointer truncate " +
-                      (done ? "text-muted-foreground" : "")
-                    }
-                  >
-                    {h.name}
-                  </label>
-                  <span
-                    className={
-                      "flex items-center gap-1 text-xs shrink-0 " +
-                      (streak > 0 ? "text-primary" : "text-muted-foreground")
-                    }
-                    title={`${streak}-day streak`}
-                  >
-                    <Flame className="h-3 w-3" />
-                    {streak}
-                  </span>
-                  <button
-                    onClick={() => toggleItemsOpen(h.id)}
-                    className={cn(
-                      "text-muted-foreground hover:text-foreground transition shrink-0",
-                      isItemsOpen && "text-primary",
-                    )}
-                    aria-label="Toggle checklist"
-                    aria-expanded={isItemsOpen}
-                    title="Sub-items checklist"
-                  >
-                    <ListChecks className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => toggleExpand(h.id)}
-                    className={cn(
-                      "text-muted-foreground hover:text-foreground transition shrink-0",
-                      isExpanded && "text-primary",
-                    )}
-                    aria-label="Toggle calendar"
-                    aria-expanded={isExpanded}
-                  >
-                    <CalendarDays className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => remove(h.id)}
-                    className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition shrink-0"
-                    aria-label="Remove habit"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  {editingHabitId === h.id ? (
+                    <>
+                      <Input
+                        autoFocus
+                        value={editingHabitValue}
+                        onChange={(e) => setEditingHabitValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveEditHabit();
+                          if (e.key === "Escape") setEditingHabitId(null);
+                        }}
+                        className="flex-1 h-8 bg-background"
+                      />
+                      <button
+                        onClick={saveEditHabit}
+                        className="text-muted-foreground hover:text-primary transition shrink-0"
+                        aria-label="Save"
+                      >
+                        <Check className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => setEditingHabitId(null)}
+                        className="text-muted-foreground hover:text-foreground transition shrink-0"
+                        aria-label="Cancel"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <label
+                        htmlFor={`h-${h.id}`}
+                        className={
+                          "flex-1 min-w-0 text-sm cursor-pointer truncate " +
+                          (done ? "text-muted-foreground" : "")
+                        }
+                      >
+                        {h.name}
+                      </label>
+                      <span
+                        className={
+                          "flex items-center gap-1 text-xs shrink-0 " +
+                          (streak > 0 ? "text-primary" : "text-muted-foreground")
+                        }
+                        title={`${streak}-day streak`}
+                      >
+                        <Flame className="h-3 w-3" />
+                        {streak}
+                      </span>
+                      <button
+                        onClick={() => toggleItemsOpen(h.id)}
+                        className={cn(
+                          "text-muted-foreground hover:text-foreground transition shrink-0",
+                          isItemsOpen && "text-primary",
+                        )}
+                        aria-label="Toggle checklist"
+                        aria-expanded={isItemsOpen}
+                        title="Sub-items checklist"
+                      >
+                        <ListChecks className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => toggleExpand(h.id)}
+                        className={cn(
+                          "text-muted-foreground hover:text-foreground transition shrink-0",
+                          isExpanded && "text-primary",
+                        )}
+                        aria-label="Toggle calendar"
+                        aria-expanded={isExpanded}
+                      >
+                        <CalendarDays className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => startEditHabit(h.id, h.name)}
+                        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground transition shrink-0"
+                        aria-label="Edit habit"
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => remove(h.id)}
+                        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition shrink-0"
+                        aria-label="Remove habit"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {isItemsOpen && (
@@ -305,22 +423,60 @@ function HabitTracker({ today }: { today: string }) {
                               onCheckedChange={() => toggleItemDate(h.id, item.id, today)}
                               id={`hi-${item.id}`}
                             />
-                            <label
-                              htmlFor={`hi-${item.id}`}
-                              className={cn(
-                                "flex-1 min-w-0 text-xs cursor-pointer truncate",
-                                itemDone && "text-muted-foreground line-through",
-                              )}
-                            >
-                              {item.label}
-                            </label>
-                            <button
-                              onClick={() => removeItem(item.id)}
-                              className="opacity-0 group-hover/item:opacity-100 text-muted-foreground hover:text-destructive transition shrink-0"
-                              aria-label="Remove item"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
+                            {editingItemId === item.id ? (
+                              <>
+                                <Input
+                                  autoFocus
+                                  value={editingItemValue}
+                                  onChange={(e) => setEditingItemValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") saveEditItem();
+                                    if (e.key === "Escape") setEditingItemId(null);
+                                  }}
+                                  className="flex-1 h-6 text-xs bg-background"
+                                />
+                                <button
+                                  onClick={saveEditItem}
+                                  className="text-muted-foreground hover:text-primary transition shrink-0"
+                                  aria-label="Save"
+                                >
+                                  <Check className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setEditingItemId(null)}
+                                  className="text-muted-foreground hover:text-foreground transition shrink-0"
+                                  aria-label="Cancel"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <label
+                                  htmlFor={`hi-${item.id}`}
+                                  className={cn(
+                                    "flex-1 min-w-0 text-xs cursor-pointer truncate",
+                                    itemDone && "text-muted-foreground line-through",
+                                  )}
+                                >
+                                  {item.label}
+                                </label>
+                                <button
+                                  onClick={() => startEditItem(item.id, item.label)}
+                                  className="opacity-0 group-hover/item:opacity-100 text-muted-foreground hover:text-foreground transition shrink-0"
+                                  aria-label="Edit item"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => removeItem(item.id)}
+                                  className="opacity-0 group-hover/item:opacity-100 text-muted-foreground hover:text-destructive transition shrink-0"
+                                  aria-label="Remove item"
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
                           </li>
                         );
                       })}
