@@ -22,6 +22,22 @@ import { NativeSettings, AndroidSettings } from "capacitor-native-settings";
 
 export const isNative = () => Capacitor.isNativePlatform();
 
+/**
+ * True when running in a mobile browser tab on Android (e.g. the Lovable
+ * preview link or the live site opened in Chrome) rather than the
+ * installed native app. This matters because Chrome for Android disables
+ * the plain `new Notification()` constructor entirely — it only supports
+ * notifications triggered from a registered Service Worker — so
+ * requestNotificationPermission() and sendTestNotification() will always
+ * fail here with an "unavailable" error, by design of the browser, not a
+ * bug. The fix is always "open the installed app", never a code change.
+ */
+export function isAndroidMobileBrowser(): boolean {
+  if (isNative()) return false;
+  if (typeof navigator === "undefined") return false;
+  return /Android/i.test(navigator.userAgent);
+}
+
 /** Channel ids used across the app. Keep in sync with ensureChannels(). */
 export const CHANNELS = {
   /** Regular task/planner reminders — normal priority, default sound. */

@@ -8,6 +8,7 @@ import { useAuth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import {
   isNative,
+  isAndroidMobileBrowser,
   getPermissionStatus,
   requestNotificationPermission,
   requestExactAlarmPermission,
@@ -130,6 +131,17 @@ function NotificationsPanel() {
         <Bell className="h-4 w-4 text-muted-foreground" />
         <h2 className="text-sm font-medium">Notifications</h2>
       </div>
+
+      {isAndroidMobileBrowser() && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+          <strong className="font-medium">
+            You're viewing this in your phone's browser, not the installed app.
+          </strong>{" "}
+          Android's browser doesn't support notifications the way the installed app does —
+          everything below will fail here by design, not because anything's broken. Open the{" "}
+          <strong>My Day Dawn</strong> app from your home screen icon instead, and test from there.
+        </div>
+      )}
 
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground">Show notifications</span>
