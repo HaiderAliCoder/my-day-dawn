@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
-import { Bell, BellRing, Eye, EyeOff } from "lucide-react";
+import { Bell, BellRing, Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/app-shell";
@@ -61,6 +61,28 @@ function NotificationsPanel() {
 
   useEffect(() => {
     refresh();
+
+    // If the user changes the site's notification permission directly in
+    // their browser's own UI (the padlock/site-info icon next to the
+    // address bar) instead of through this panel, our React state has no
+    // way to know that happened — it'll just silently go stale. The
+    // Permissions API lets us listen for that and resync automatically.
+    // Not available in every browser (and irrelevant on native), so this
+    // is best-effort.
+    if (isNative() || typeof navigator === "undefined" || !navigator.permissions) return;
+    let permissionStatus: PermissionStatus | undefined;
+    navigator.permissions
+      .query({ name: "notifications" as PermissionName })
+      .then((result) => {
+        permissionStatus = result;
+        result.addEventListener("change", refresh);
+      })
+      .catch(() => {
+        // Permissions API doesn't support querying "notifications" in this
+        // browser (e.g. Safari) — nothing to do, refresh() on mount above
+        // already got us the best snapshot we can.
+      });
+    return () => permissionStatus?.removeEventListener("change", refresh);
   }, []);
 
   const handleRequestPermission = async () => {
@@ -116,6 +138,21 @@ function NotificationsPanel() {
     setError(null);
     setTestSent(false);
     try {
+      // Don't trust cached React state here — re-check live, since the
+      // browser's own notification permission can change outside this app
+      // (site settings, a previous "Block" click, etc.) and the web
+      // plugin's schedule() call below will silently succeed-but-do-nothing
+      // if permission isn't actually granted, with no error at all.
+      const fresh = await getPermissionStatus();
+      setStatus(fresh);
+      if (fresh.display !== "granted") {
+        setError(
+          isNative()
+            ? 'Permission isn\'t actually granted yet — tap "Enable" (or "Open settings") above first.'
+            : "Your browser has notifications blocked for this site right now — check the icon next to the address bar, allow notifications, then try again.",
+        );
+        return;
+      }
       await sendTestNotification();
       setTestSent(true);
     } catch {
@@ -127,9 +164,19 @@ function NotificationsPanel() {
 
   return (
     <div className="mt-4 space-y-3 rounded-xl border border-border bg-card p-5">
-      <div className="flex items-center gap-2">
-        <Bell className="h-4 w-4 text-muted-foreground" />
-        <h2 className="text-sm font-medium">Notifications</h2>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Bell className="h-4 w-4 text-muted-foreground" />
+          <h2 className="text-sm font-medium">Notifications</h2>
+        </div>
+        <button
+          type="button"
+          onClick={refresh}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <RefreshCw className="h-3 w-3" />
+          Refresh status
+        </button>
       </div>
 
       {isAndroidMobileBrowser() && (
