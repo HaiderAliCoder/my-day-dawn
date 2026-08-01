@@ -188,6 +188,18 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
       // case if scheduling fails for any reason (e.g. permission revoked).
     });
     return () => {
+      // Only cancel if the app is visible right now. If we're backgrounded,
+      // this cleanup is very likely firing because the local JS timer
+      // finished the session on its own — Android keeps the WebView's JS
+      // alive for a while after you leave the app, so the on-screen
+      // countdown (and this effect's dependencies) can still update while
+      // hidden. In that case we must NOT cancel, or the one thing that can
+      // actually reach you while backgrounded — the real OS notification —
+      // gets pulled out from under itself moments before it would fire.
+      // Foreground cleanups (Pause, Done, Cancel, a natural finish while
+      // you're looking at the screen) are always safe to cancel, since
+      // the in-app UI already shows completion either way.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       cancelNotifications([id]).catch(() => {});
     };
   }, [activeSession?.id, activeSession?.startedAt, activeSession?.pausedAt, isPaused]);

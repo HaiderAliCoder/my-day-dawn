@@ -237,6 +237,28 @@ function NotificationsPanel() {
         </div>
       )}
 
+      {isNative() && (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <p className="font-medium mb-1">If notifications still don't fire in the background</p>
+          <p>
+            Many Android phones manage background apps through a second
+            setting that's separate from the battery button above, and it
+            isn't reachable from inside this app — there's no single
+            Android API for it, so every app has to ask you to find it
+            manually. Look in your phone's <strong>Settings → Apps → My Day
+            Dawn</strong> for anything called <strong>Autostart</strong>,{" "}
+            <strong>Auto-launch</strong>, or <strong>App launch
+            management</strong>, or check a separate <strong>Phone
+            Manager</strong> / <strong>Security</strong> / <strong>Battery
+            Manager</strong> app for a list of <strong>Protected apps</strong>{" "}
+            or apps allowed to <strong>run in background</strong>. Enable it
+            for My Day Dawn. Without it, some phones kill the app within
+            seconds of being backgrounded, before a scheduled notification
+            gets the chance to fire.
+          </p>
+        </div>
+      )}
+
       <div className="pt-1">
         <Button size="sm" disabled={busy || status?.display !== "granted"} onClick={handleTest}>
           <BellRing className="mr-1.5 h-3.5 w-3.5" />
