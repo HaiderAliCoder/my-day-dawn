@@ -11,6 +11,8 @@ import {
   getPermissionStatus,
   requestNotificationPermission,
   requestExactAlarmPermission,
+  openNotificationSettings,
+  openBatteryOptimizationSettings,
   sendTestNotification,
   type PermissionSnapshot,
 } from "@/lib/notifications";
@@ -86,6 +88,28 @@ function NotificationsPanel() {
     }
   };
 
+  const handleOpenSettings = async () => {
+    setError(null);
+    try {
+      await openNotificationSettings();
+    } catch {
+      setError(
+        "Couldn't open system settings — enable notifications manually from your phone's Settings app.",
+      );
+    }
+  };
+
+  const handleOpenBatterySettings = async () => {
+    setError(null);
+    try {
+      await openBatteryOptimizationSettings();
+    } catch {
+      setError(
+        'Couldn\'t open battery settings — look for "Battery" or "App battery usage" under this app in your phone\'s Settings app.',
+      );
+    }
+  };
+
   const handleTest = async () => {
     setBusy(true);
     setError(null);
@@ -111,13 +135,25 @@ function NotificationsPanel() {
         <span className="text-muted-foreground">Show notifications</span>
         <div className="flex items-center gap-2">
           <StatusPill state={status?.display ?? null} />
-          {status?.display !== "granted" && (
-            <Button size="sm" variant="outline" disabled={busy} onClick={handleRequestPermission}>
-              Enable
+          {status?.display === "denied" ? (
+            <Button size="sm" variant="outline" onClick={handleOpenSettings}>
+              Open settings
             </Button>
+          ) : (
+            status?.display !== "granted" && (
+              <Button size="sm" variant="outline" disabled={busy} onClick={handleRequestPermission}>
+                Enable
+              </Button>
+            )
           )}
         </div>
       </div>
+      {status?.display === "denied" && (
+        <p className="-mt-1.5 text-xs text-muted-foreground">
+          Android already asked once and won't ask again from inside the app — tap "Open settings"
+          above and turn notifications on for this app directly.
+        </p>
+      )}
 
       {isNative() && (
         <div className="flex items-center justify-between text-sm">
@@ -130,6 +166,15 @@ function NotificationsPanel() {
               </Button>
             )}
           </div>
+        </div>
+      )}
+
+      {isNative() && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">Background reliability</span>
+          <Button size="sm" variant="outline" onClick={handleOpenBatterySettings}>
+            Battery settings
+          </Button>
         </div>
       )}
 
@@ -147,7 +192,7 @@ function NotificationsPanel() {
 
       <p className="text-xs text-muted-foreground">
         {isNative()
-          ? "On Android, exact-time alarms need a one-time approval on a system settings screen — enable it above so reminders and alarms fire on time."
+          ? 'For alarms and reminders to fire reliably when the app is closed and there\'s no wifi/data, set "Battery settings" above to unrestricted/not optimized \u2014 this is the #1 reason background notifications get delayed or dropped on Android.'
           : "In the browser, notifications only fire while this tab stays open. Install the Android app for reliable background notifications."}
       </p>
     </div>

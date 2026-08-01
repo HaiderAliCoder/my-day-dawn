@@ -39,6 +39,12 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Declared explicitly (in addition to the plugin's own manifest,
+         which already includes this) so it's never dependent on manifest
+         merging succeeding — required on Android 13+ to show any
+         notification at all. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Lets scheduled notifications (and alarms, built on the same
          mechanism) fire at the exact time instead of being batched/delayed
          by Doze mode. Still requires the user to grant it via a system

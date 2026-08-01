@@ -1,61 +1,93 @@
-# Phase 1 — Notification infrastructure
+# Round 2 — Permission fix + offline app shell
 
-## What's in here
-- `src/lib/notifications.ts` — **new file.** The one place that talks to the
-  Capacitor Local Notifications plugin. Everything later (alarms, task
-  reminders, routine pings) will call functions from this file instead of
-  the plugin directly.
-- `src/routes/settings.tsx` — **modified.** Added a "Notifications" panel:
-  shows permission status, lets you grant notification + exact-alarm
-  permission, and has a "Send test notification" button.
-- `android/app/src/main/AndroidManifest.xml` — **modified.** Added the
-  `SCHEDULE_EXACT_ALARM` permission so scheduled notifications (and later,
-  alarms) fire at the precise time instead of getting batched by Android's
-  Doze mode.
-- `package.json` — **modified.** Added `@capacitor/local-notifications` as a
-  dependency.
+## 1. Notification permission fix
+
+**Root cause:** Android stops showing its own in-app permission dialog after
+a request has been denied once (sometimes after just one denial, depending
+on OEM). If your very first test build hit a denial before everything was
+wired up correctly, every "Enable" tap after that silently does nothing —
+there's no dialog to show anymore, and it stays stuck.
+
+**What changed:**
+- `AndroidManifest.xml` — explicitly declares `POST_NOTIFICATIONS` (belt
+  and suspenders; the plugin already merges this in, but this removes any
+  doubt).
+- `src/lib/notifications.ts` — added `openNotificationSettings()` and
+  `openBatteryOptimizationSettings()`, using the new
+  `capacitor-native-settings` plugin to deep-link straight into your
+  phone's system settings for this app.
+- `src/routes/settings.tsx` — once permission shows "Denied", the button
+  changes from a dead-end "Enable" to "Open settings", with an explanation
+  of why. There's also a new **Background reliability** row that opens
+  battery-optimization settings — several Android OEMs (Samsung, Xiaomi,
+  Oppo, Vivo especially) kill background apps aggressively by default,
+  which is a *separate* setting from notification permission and a common
+  cause of "works sometimes, not others."
+
+**What you need to do on your phone:**
+Since your test builds are already stuck in the "silently denied" state,
+the in-app button can't fix that retroactively. Do one of:
+- Go to **Settings → Apps → My Day Dawn → Notifications** and turn it on
+  manually, **or**
+- Fully **uninstall** the app before installing the next build (a fresh
+  install resets permission state).
+
+Then also open **Battery settings** (new button in the app) and set it to
+unrestricted / not optimized, for background reliability.
+
+New dependency: `capacitor-native-settings` — run `bun add
+capacitor-native-settings` (already reflected in the included
+`package.json`).
+
+## 2. Offline app shell (the bigger change)
+
+Your `capacitor.config.ts` was loading the app from `https://my-day-dawn.lovable.app/`
+live, over the network, every time it opened — meaning no wifi/data meant
+the app couldn't open at all. That's now fixed:
+
+- **New file `vite.mobile.config.ts`** — a separate build specifically for
+  the Android app: no server (`nitro: false`), and TanStack Start's SPA
+  mode produces a fully static, self-contained `index.html`.
+- **`capacitor.config.ts`** — `server.url` removed. `webDir` now points to
+  `dist/client`, the static build's output. The app opens from files
+  bundled inside the APK — zero network needed to launch.
+- **`package.json`** — new scripts:
+  - `bun run build:mobile` — builds the static shell into `dist/client`.
+  - `bun run android:build` — does that, then runs `cap sync android` in
+    one step. Use this before opening Android Studio.
+
+**I verified this actually builds and serves correctly** — I ran the full
+build, confirmed `dist/client/index.html` is produced, and served it with a
+plain static file server (no backend at all) to confirm the shell loads.
+**Your web deploy on Lovable is completely untouched** — it still uses the
+original `vite.config.ts` / `bun run build`, unaffected by any of this.
+
+**Important — what this does and doesn't fix:**
+- ✅ The app now **opens** with no network — no more blank/error screen in
+  airplane mode.
+- ✅ Notifications/alarms scheduled while online will still **fire** offline
+  regardless (that was never blocked by this — it's OS-level and doesn't
+  need the WebView loaded at all).
+- ❌ Your actual **data** — tasks, goals, habits, etc. — still needs network
+  to load/save, since it's live Supabase calls. Opening the app offline
+  right now will show empty/stale screens for anything data-driven. That's
+  the "data sync" work we agreed to sequence for later.
 
 ## How to apply this
-1. Copy these files into the same paths in your actual repo, overwriting
-   `src/routes/settings.tsx` and `android/app/src/main/AndroidManifest.xml`,
-   and adding the new `src/lib/notifications.ts`.
-2. Since your project uses `bun` (there's a `bun.lock`), install the new
-   dependency with bun instead of copying my `package.json` wholesale —
-   just run:
-   ```
-   bun add @capacitor/local-notifications
-   ```
-   (This does the same thing my `package.json` edit does — I'm including it
-   here just so you can diff it if you want.)
-3. Sync the native Android project so the plugin's native code gets pulled
-   in:
-   ```
-   npx cap sync android
-   ```
-4. Open the project in Android Studio (`npx cap open android`) and build/run
-   on your phone like normal.
-5. In the app: go to **Settings**, and you should see the new
-   **Notifications** panel. Tap **Enable** for both rows, then **Send test
-   notification** — it should show up in your phone's notification shade
-   about 5 seconds later.
-
-## What this does and doesn't do yet
-- ✅ Requests the Android 13+ notification permission and the Android 12+
-  exact-alarm setting, with clear status shown in Settings.
-- ✅ Sets up two notification channels (`reminders`, `alarms`) with
-  different importance — alarms are max-importance/heads-up, reminders are
-  normal.
-- ✅ Gives you `scheduleNotification()`, `cancelNotifications()`, and
-  `getPendingNotifications()` to build on.
-- ✅ Works on web too (falls back to the browser Notification API), so
-  nothing breaks for the browser version — though as before, web
-  notifications only fire while the tab is open, that's a browser
-  limitation, not something we can fix from JS.
-- ❌ Nothing schedules a *real* reminder/alarm yet — that's Phase 2 (Alarms)
-  and Phase 3 (task time tracking), which will call `scheduleNotification()`
-  from this file.
+1. Copy these files into your repo at the same paths.
+2. `bun add @capacitor/local-notifications capacitor-native-settings` (if
+   you haven't already from round 1).
+3. `bun run android:build` — builds the static shell and syncs it into the
+   native project.
+4. Open in Android Studio (`npx cap open android`), rebuild, and — this
+   time — **uninstall the old app from your phone first**, then install
+   fresh so the permission state resets.
+5. In Settings: grant notification permission (should show the real system
+   dialog this time on a fresh install), set battery settings to
+   unrestricted, send a test notification, then try turning on airplane
+   mode and reopening the app to confirm it still opens.
 
 ## Next
-Once you've confirmed the test notification works on your actual phone,
-say the word and I'll move on to Phase 2 (the Alarms feature) — including
-the Supabase table for storing alarms and the SQL for you to run.
+Once you've confirmed both of these on your phone (permission grants
+cleanly, app opens in airplane mode), let me know and I'll move on to
+Phase 2 (Alarms) as planned.

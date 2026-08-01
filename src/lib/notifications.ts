@@ -1,5 +1,6 @@
 import { Capacitor, type PermissionState } from "@capacitor/core";
 import { LocalNotifications } from "@capacitor/local-notifications";
+import { NativeSettings, AndroidSettings } from "capacitor-native-settings";
 
 /**
  * Phase 1 notification infrastructure.
@@ -117,6 +118,33 @@ export async function requestExactAlarmPermission(): Promise<PermissionState> {
   } catch {
     return "granted";
   }
+}
+
+/**
+ * Opens this app's notification settings screen directly. Use this instead
+ * of requestNotificationPermission() once `display` is "denied" — Android
+ * stops showing its own in-app permission dialog after a request has been
+ * denied once (sometimes even after just one denial, depending on OEM), so
+ * requesting again silently does nothing. Deep-linking to system settings
+ * is the only way to let the user flip it back on from that state.
+ */
+export async function openNotificationSettings(): Promise<void> {
+  if (!isNative()) return;
+  await NativeSettings.openAndroid({ option: AndroidSettings.AppNotification });
+}
+
+/**
+ * Opens the "ignore battery optimization" screen for this app. Several
+ * Android OEMs (Samsung, Xiaomi, Oppo, Vivo, etc.) aggressively kill
+ * background apps to save battery, which can delay or drop scheduled
+ * notifications/alarms even when notification permission itself is
+ * granted — this is a separate setting from notification permission and
+ * is the most common reason background delivery is unreliable on some
+ * phones and not others.
+ */
+export async function openBatteryOptimizationSettings(): Promise<void> {
+  if (!isNative()) return;
+  await NativeSettings.openAndroid({ option: AndroidSettings.BatteryOptimization });
 }
 
 export interface ScheduleInput {
