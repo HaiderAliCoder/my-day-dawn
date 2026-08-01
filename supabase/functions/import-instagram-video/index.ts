@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const VIDEO_BUCKET = "motivational-videos";
+const THUMB_BUCKET = "motivational-thumbnails";
 const MAX_VIDEO_BYTES = 10 * 1024 * 1024;
 
 const corsHeaders = {
@@ -53,6 +54,35 @@ function isValidInstagramUrl(raw: string): URL | null {
   }
 }
 
+interface OgImage {
+  url: string;
+  width?: number;
+  height?: number;
+}
+
+/** Instagram publishes its own thumbnail + real pixel dimensions via
+ *  og:image / og:image:width / og:image:height — far more reliable than
+ *  generating one ourselves from the video, and gives us the exact
+ *  aspect ratio (e.g. 0.5625 for a 9:16 reel) up front. */
+function extractOgImage(html: string): OgImage | null {
+  const urlMatch = html.match(/<meta property="og:image" content="([^"]+)"/);
+  if (!urlMatch) return null;
+  const widthMatch = html.match(/<meta property="og:image:width" content="(\d+)"/);
+  const heightMatch = html.match(/<meta property="og:image:height" content="(\d+)"/);
+  return {
+    url: decodeHtmlEntities(urlMatch[1]),
+    width: widthMatch ? Number(widthMatch[1]) : undefined,
+    height: heightMatch ? Number(heightMatch[1]) : undefined,
+  };
+}
+
+interface ExtractResult {
+  videoUrl: string;
+  caption?: string;
+  image: OgImage | null;
+  debug: string;
+}
+
 /**
  * Tries several public extraction paths against Instagram's public page
  * HTML for a post/reel:
@@ -62,8 +92,10 @@ function isValidInstagramUrl(raw: string): URL | null {
  *     page's bundled JSON, regardless of key name — this is what modern
  *     Reels pages actually contain, with slashes JSON-escaped (\/) and
  *     query-string ampersands HTML-entity-encoded (&amp;).
+ * Also pulls og:image (+ dimensions) from whichever page variant has it,
+ * for the thumbnail.
  */
-async function fetchVideoUrl(postUrl: string): Promise<{ videoUrl: string; caption?: string; debug: string }> {
+async function fetchVideoUrl(postUrl: string): Promise<ExtractResult> {
   const res = await fetch(postUrl, {
     headers: {
       "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
@@ -76,18 +108,19 @@ async function fetchVideoUrl(postUrl: string): Promise<{ videoUrl: string; capti
   const html = await res.text();
   const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/);
   const caption = titleMatch ? shortTitleFromCaption(decodeHtmlEntities(titleMatch[1])) : undefined;
+  let image = extractOgImage(html);
 
   const ogMatch =
     html.match(/<meta property="og:video:secure_url" content="([^"]+)"/) ??
     html.match(/<meta property="og:video" content="([^"]+)"/);
   if (ogMatch) {
-    return { videoUrl: ogMatch[1].replace(/&amp;/g, "&"), caption, debug: "og:video" };
+    return { videoUrl: ogMatch[1].replace(/&amp;/g, "&"), caption, image, debug: "og:video" };
   }
 
   const jsonMatch = html.match(/"video_url":"([^"]+)"/);
   if (jsonMatch) {
     const decoded = jsonMatch[1].replace(/\\u0026/g, "&").replace(/\\\//g, "/");
-    return { videoUrl: decoded, caption, debug: "video_url json" };
+    return { videoUrl: decoded, caption, image, debug: "video_url json" };
   }
 
   // Second attempt: fetch again with the app-id header Instagram's own
@@ -101,16 +134,17 @@ async function fetchVideoUrl(postUrl: string): Promise<{ videoUrl: string; capti
     },
   });
   const html2 = await res2.text();
+  if (!image) image = extractOgImage(html2);
   const ogMatch2 =
     html2.match(/<meta property="og:video:secure_url" content="([^"]+)"/) ??
     html2.match(/<meta property="og:video" content="([^"]+)"/);
   if (ogMatch2) {
-    return { videoUrl: ogMatch2[1].replace(/&amp;/g, "&"), caption, debug: "og:video (attempt 2)" };
+    return { videoUrl: ogMatch2[1].replace(/&amp;/g, "&"), caption, image, debug: "og:video (attempt 2)" };
   }
   const jsonMatch2 = html2.match(/"video_url":"([^"]+)"/);
   if (jsonMatch2) {
     const decoded = jsonMatch2[1].replace(/\\u0026/g, "&").replace(/\\\//g, "/");
-    return { videoUrl: decoded, caption, debug: "video_url json (attempt 2)" };
+    return { videoUrl: decoded, caption, image, debug: "video_url json (attempt 2)" };
   }
 
   // Generic fallback: grab any quoted string containing a CDN .mp4 URL,
@@ -124,7 +158,7 @@ async function fetchVideoUrl(postUrl: string): Promise<{ videoUrl: string; capti
       .replace(/\\\//g, "/")
       .replace(/&amp;/g, "&")
       .replace(/\\u0026/g, "&");
-    return { videoUrl: decoded, caption, debug: "mp4 regex" };
+    return { videoUrl: decoded, caption, image, debug: "mp4 regex" };
   }
 
   throw new Error(
@@ -169,8 +203,8 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const { videoUrl, caption, debug } = await fetchVideoUrl(igUrl.toString());
-    console.log("extracted via", debug);
+    const { videoUrl, caption, image, debug } = await fetchVideoUrl(igUrl.toString());
+    console.log("extracted via", debug, "has image:", !!image);
 
     const videoRes = await fetch(videoUrl);
     if (!videoRes.ok || !videoRes.body) {
@@ -192,11 +226,34 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const path = `${user.id}/${crypto.randomUUID()}.mp4`;
+    const id = crypto.randomUUID();
+    const path = `${user.id}/${id}.mp4`;
     const { error: uploadError } = await supabase.storage
       .from(VIDEO_BUCKET)
       .upload(path, bytes, { contentType: "video/mp4" });
     if (uploadError) return json({ error: uploadError.message }, 500);
+
+    // Best-effort thumbnail — a failure here shouldn't fail the whole import.
+    let thumbnailPath: string | null = null;
+    let aspectRatio: number | null = null;
+    if (image) {
+      try {
+        const imgRes = await fetch(image.url);
+        if (imgRes.ok) {
+          const imgBytes = new Uint8Array(await imgRes.arrayBuffer());
+          const thumbPath = `${user.id}/${id}.jpg`;
+          const { error: thumbErr } = await supabase.storage
+            .from(THUMB_BUCKET)
+            .upload(thumbPath, imgBytes, { contentType: "image/jpeg" });
+          if (!thumbErr) {
+            thumbnailPath = thumbPath;
+            if (image.width && image.height) aspectRatio = image.width / image.height;
+          }
+        }
+      } catch (e) {
+        console.error("thumbnail download/upload failed", e);
+      }
+    }
 
     const finalTitle = (title && String(title).trim()) || caption || "Instagram clip";
     const finalTags = Array.isArray(tags) ? tags.filter((t) => typeof t === "string") : [];
@@ -209,6 +266,8 @@ Deno.serve(async (req: Request) => {
         storage_path: path,
         tags: finalTags,
         source_url: igUrl.toString(),
+        thumbnail_path: thumbnailPath,
+        aspect_ratio: aspectRatio,
       })
       .select("*")
       .single();

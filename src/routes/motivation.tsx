@@ -155,44 +155,15 @@ function VideoGrid() {
           Surprise me
         </Button>
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
         {videos.map((v) => (
-          <div key={v.id} className="group rounded-xl border border-border bg-card p-4 relative">
-            <div className="absolute top-3 right-3 flex items-center gap-1">
-              <button
-                onClick={() => setEditing(v)}
-                className="text-muted-foreground hover:text-foreground transition p-1"
-                aria-label="Edit title and tags"
-              >
-                <Pencil className="h-4 w-4" />
-              </button>
-              <button
-                onClick={() => remove(v)}
-                className="text-destructive hover:text-destructive/80 transition p-1"
-                aria-label="Delete video"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-            <button
-              onClick={() => openPlayer(v)}
-              className="w-full flex flex-col items-start gap-3 text-left"
-            >
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <Play className="h-4 w-4 ml-0.5" />
-              </span>
-              <span>
-                <span className="block text-sm font-medium truncate max-w-[14rem] pr-10">
-                  {v.title}
-                </span>
-                {v.tags.length > 0 && (
-                  <span className="block text-xs text-muted-foreground mt-0.5 truncate max-w-[14rem]">
-                    {v.tags.join(" · ")}
-                  </span>
-                )}
-              </span>
-            </button>
-          </div>
+          <VideoThumbnailCard
+            key={v.id}
+            video={v}
+            onPlay={() => openPlayer(v)}
+            onEdit={() => setEditing(v)}
+            onRemove={() => remove(v)}
+          />
         ))}
       </div>
 
@@ -213,6 +184,97 @@ function VideoGrid() {
         />
       )}
     </>
+  );
+}
+
+/** A card whose thumbnail box matches the clip's real aspect ratio (9:16
+ *  for a typical reel, but whatever the source actually is) instead of a
+ *  fixed square. Imported clips already have a thumbnail from Instagram's
+ *  own og:image; anything uploaded before this feature existed (or missing
+ *  one for any other reason) gets one generated client-side, once, on
+ *  first render here, then cached in the database for next time. */
+function VideoThumbnailCard({
+  video,
+  onPlay,
+  onEdit,
+  onRemove,
+}: {
+  video: MotivationalVideo;
+  onPlay: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const { getThumbnailUrl, ensureThumbnail } = useMotivationalVideos();
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const [ratio, setRatio] = useState<number>(video.aspectRatio ?? 9 / 16);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (video.thumbnailPath) {
+        const url = await getThumbnailUrl(video.thumbnailPath);
+        if (!cancelled && url) setThumbUrl(url);
+        return;
+      }
+      // No thumbnail on record yet — backfill it once, silently.
+      const updated = await ensureThumbnail(video);
+      if (cancelled) return;
+      if (updated.aspectRatio) setRatio(updated.aspectRatio);
+      if (updated.thumbnailPath) {
+        const url = await getThumbnailUrl(updated.thumbnailPath);
+        if (!cancelled && url) setThumbUrl(url);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Only re-run if the underlying thumbnail reference actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [video.id, video.thumbnailPath]);
+
+  return (
+    <div className="group rounded-xl border border-border bg-card overflow-hidden relative flex flex-col">
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+        <button
+          onClick={onEdit}
+          className="p-1.5 rounded-md bg-background/80 text-muted-foreground hover:text-foreground transition"
+          aria-label="Edit title and tags"
+        >
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={onRemove}
+          className="p-1.5 rounded-md bg-background/80 text-destructive hover:text-destructive/80 transition"
+          aria-label="Delete video"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <button
+        onClick={onPlay}
+        className="relative block w-full bg-black"
+        style={{ aspectRatio: ratio }}
+      >
+        {thumbUrl ? (
+          <img src={thumbUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-muted/40">
+            <Clapperboard className="h-6 w-6 text-muted-foreground/40" />
+          </div>
+        )}
+        <span className="absolute inset-0 flex items-center justify-center bg-black/10 transition group-hover:bg-black/30">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-black shadow">
+            <Play className="h-4 w-4 ml-0.5" />
+          </span>
+        </span>
+      </button>
+      <div className="p-3">
+        <p className="text-sm font-medium truncate">{video.title}</p>
+        {video.tags.length > 0 && (
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{video.tags.join(" · ")}</p>
+        )}
+      </div>
+    </div>
   );
 }
 

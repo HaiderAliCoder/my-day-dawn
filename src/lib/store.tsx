@@ -794,6 +794,9 @@ export interface MotivationalVideo {
   durationSeconds?: number;
   tags: string[];
   createdAt: number;
+  thumbnailPath?: string;
+  /** width / height of the source clip, e.g. 0.5625 for a 9:16 reel. */
+  aspectRatio?: number;
 }
 
 interface MotivationalVideoRow {
@@ -803,6 +806,8 @@ interface MotivationalVideoRow {
   duration_seconds: number | null;
   tags: string[];
   created_at: string;
+  thumbnail_path: string | null;
+  aspect_ratio: number | null;
 }
 
 function rowToVideo(row: MotivationalVideoRow): MotivationalVideo {
@@ -813,11 +818,80 @@ function rowToVideo(row: MotivationalVideoRow): MotivationalVideo {
     durationSeconds: row.duration_seconds ?? undefined,
     tags: row.tags ?? [],
     createdAt: new Date(row.created_at).getTime(),
+    thumbnailPath: row.thumbnail_path ?? undefined,
+    aspectRatio: row.aspect_ratio ?? undefined,
   };
 }
 
 const VIDEO_BUCKET = "motivational-videos";
+const THUMB_BUCKET = "motivational-thumbnails";
 export const MAX_VIDEO_BYTES = 10 * 1024 * 1024; // 10MB
+
+/**
+ * Grabs a frame partway into a video source (blob: URL or a signed
+ * storage URL) and returns it as a small JPEG, along with the clip's real
+ * aspect ratio — so cards can render at the same proportions as the
+ * source video instead of a fixed box. Resolves null on any failure
+ * (unsupported codec, CORS, etc.) rather than throwing, since a missing
+ * thumbnail shouldn't block the upload/import itself.
+ */
+async function captureVideoThumbnail(
+  src: string,
+): Promise<{ blob: Blob; aspectRatio: number } | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.crossOrigin = "anonymous";
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.style.position = "fixed";
+    video.style.left = "-9999px";
+    video.style.top = "0";
+
+    let settled = false;
+    const finish = (result: { blob: Blob; aspectRatio: number } | null) => {
+      if (settled) return;
+      settled = true;
+      video.remove();
+      resolve(result);
+    };
+
+    const timeout = setTimeout(() => finish(null), 8000);
+
+    video.onerror = () => {
+      clearTimeout(timeout);
+      finish(null);
+    };
+    video.onloadedmetadata = () => {
+      if (!video.videoWidth || !video.videoHeight) return finish(null);
+      const seekTo = Math.min(0.3, (video.duration || 1) * 0.1);
+      video.currentTime = seekTo;
+    };
+    video.onseeked = () => {
+      clearTimeout(timeout);
+      try {
+        const canvas = document.createElement("canvas");
+        const maxDim = 480;
+        const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight));
+        canvas.width = Math.round(video.videoWidth * scale);
+        canvas.height = Math.round(video.videoHeight * scale);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return finish(null);
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          (blob) => finish(blob ? { blob, aspectRatio: video.videoWidth / video.videoHeight } : null),
+          "image/jpeg",
+          0.8,
+        );
+      } catch {
+        finish(null);
+      }
+    };
+
+    document.body.appendChild(video);
+    video.src = src;
+  });
+}
 
 export function useMotivationalVideos() {
   const { user } = useAuth();
@@ -846,13 +920,33 @@ export function useMotivationalVideos() {
       if (file.size > MAX_VIDEO_BYTES) {
         throw new Error("Video must be 10MB or smaller.");
       }
+      const id = crypto.randomUUID();
       const ext = file.name.split(".").pop() || "mp4";
-      const path = `${userId}/${crypto.randomUUID()}.${ext}`;
+      const path = `${userId}/${id}.${ext}`;
 
       const { error: uploadError } = await supabase.storage
         .from(VIDEO_BUCKET)
         .upload(path, file, { contentType: file.type || "video/mp4" });
       if (uploadError) throw uploadError;
+
+      let thumbnailPath: string | null = null;
+      let aspectRatio: number | null = null;
+      const objectUrl = URL.createObjectURL(file);
+      try {
+        const thumb = await captureVideoThumbnail(objectUrl);
+        if (thumb) {
+          const thumbPath = `${userId}/${id}.jpg`;
+          const { error: thumbError } = await supabase.storage
+            .from(THUMB_BUCKET)
+            .upload(thumbPath, thumb.blob, { contentType: "image/jpeg" });
+          if (!thumbError) {
+            thumbnailPath = thumbPath;
+            aspectRatio = thumb.aspectRatio;
+          }
+        }
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
 
       const { data, error } = await supabase
         .from("motivational_videos")
@@ -861,6 +955,8 @@ export function useMotivationalVideos() {
           title,
           storage_path: path,
           tags,
+          thumbnail_path: thumbnailPath,
+          aspect_ratio: aspectRatio,
         })
         .select("*")
         .single();
@@ -874,6 +970,9 @@ export function useMotivationalVideos() {
   const removeMutation = useMutation({
     mutationFn: async (video: MotivationalVideo) => {
       await supabase.storage.from(VIDEO_BUCKET).remove([video.storagePath]);
+      if (video.thumbnailPath) {
+        await supabase.storage.from(THUMB_BUCKET).remove([video.thumbnailPath]);
+      }
       const { error } = await supabase.from("motivational_videos").delete().eq("id", video.id);
       if (error) throw error;
     },
@@ -936,6 +1035,41 @@ export function useMotivationalVideos() {
       queryClient.setQueryData<MotivationalVideo[]>(queryKey, (old) => [video, ...(old ?? [])]),
   });
 
+  /** Backfills a thumbnail for a video imported before this feature existed
+   *  (or where generation failed at upload time) — pulls a frame from the
+   *  already-stored video file, once, and persists it for next time. */
+  const ensureThumbnailMutation = useMutation({
+    mutationFn: async (video: MotivationalVideo) => {
+      if (video.thumbnailPath || !userId) return video;
+      const { data: signed, error: signError } = await supabase.storage
+        .from(VIDEO_BUCKET)
+        .createSignedUrl(video.storagePath, 300);
+      if (signError || !signed) return video;
+
+      const thumb = await captureVideoThumbnail(signed.signedUrl);
+      if (!thumb) return video;
+
+      const thumbPath = `${userId}/${video.id}.jpg`;
+      const { error: uploadError } = await supabase.storage
+        .from(THUMB_BUCKET)
+        .upload(thumbPath, thumb.blob, { contentType: "image/jpeg", upsert: true });
+      if (uploadError) return video;
+
+      const { data, error } = await supabase
+        .from("motivational_videos")
+        .update({ thumbnail_path: thumbPath, aspect_ratio: thumb.aspectRatio })
+        .eq("id", video.id)
+        .select("*")
+        .single();
+      if (error) return video;
+      return rowToVideo(data as MotivationalVideoRow);
+    },
+    onSuccess: (video) =>
+      queryClient.setQueryData<MotivationalVideo[]>(queryKey, (old) =>
+        (old ?? []).map((v) => (v.id === video.id ? video : v)),
+      ),
+  });
+
   return {
     videos,
     isLoading: query.isLoading,
@@ -951,11 +1085,19 @@ export function useMotivationalVideos() {
     update: (id: string, title: string, tags: string[]) =>
       updateMutation.mutateAsync({ id, title, tags }),
     updating: updateMutation.isPending,
+    ensureThumbnail: (video: MotivationalVideo) => ensureThumbnailMutation.mutateAsync(video),
     /** Signed URL, valid 1 hour — bucket is private, so this is required to play/view. */
     getPlaybackUrl: async (storagePath: string): Promise<string | null> => {
       const { data, error } = await supabase.storage
         .from(VIDEO_BUCKET)
         .createSignedUrl(storagePath, 60 * 60);
+      if (error) return null;
+      return data.signedUrl;
+    },
+    getThumbnailUrl: async (thumbnailPath: string): Promise<string | null> => {
+      const { data, error } = await supabase.storage
+        .from(THUMB_BUCKET)
+        .createSignedUrl(thumbnailPath, 60 * 60);
       if (error) return null;
       return data.signedUrl;
     },
