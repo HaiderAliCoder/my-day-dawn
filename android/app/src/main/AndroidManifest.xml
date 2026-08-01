@@ -38,4 +38,11 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Lets scheduled notifications (and alarms, built on the same
+         mechanism) fire at the exact time instead of being batched/delayed
+         by Doze mode. Still requires the user to grant it via a system
+         settings screen at runtime on Android 12+ — see
+         requestExactAlarmPermission() in src/lib/notifications.ts. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 </manifest>

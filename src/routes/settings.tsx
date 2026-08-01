@@ -1,11 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, type FormEvent } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { Bell, BellRing, Eye, EyeOff } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/app-shell";
 import { useAuth } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import {
+  isNative,
+  getPermissionStatus,
+  requestNotificationPermission,
+  requestExactAlarmPermission,
+  sendTestNotification,
+  type PermissionSnapshot,
+} from "@/lib/notifications";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -13,6 +21,138 @@ export const Route = createFileRoute("/settings")({
   }),
   component: SettingsPage,
 });
+
+function StatusPill({ state }: { state: string | null }) {
+  const label =
+    state === "granted"
+      ? "Granted"
+      : state === "denied"
+        ? "Denied"
+        : state === "prompt"
+          ? "Not asked yet"
+          : "Unknown";
+  const color =
+    state === "granted"
+      ? "bg-primary/15 text-primary"
+      : state === "denied"
+        ? "bg-destructive/15 text-destructive"
+        : "bg-muted text-muted-foreground";
+  return <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${color}`}>{label}</span>;
+}
+
+function NotificationsPanel() {
+  const [status, setStatus] = useState<PermissionSnapshot | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [testSent, setTestSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    try {
+      setStatus(await getPermissionStatus());
+    } catch {
+      // Notifications unsupported in this environment (e.g. very old
+      // browser) — leave status as null, the UI below explains that.
+      setStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const handleRequestPermission = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestNotificationPermission();
+      await refresh();
+    } catch {
+      setError("Couldn't request notification permission on this device/browser.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRequestExactAlarm = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await requestExactAlarmPermission();
+      await refresh();
+    } catch {
+      setError("Couldn't open the exact-alarm settings screen.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setBusy(true);
+    setError(null);
+    setTestSent(false);
+    try {
+      await sendTestNotification();
+      setTestSent(true);
+    } catch {
+      setError("Couldn't schedule a test notification — check permission is granted above.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 space-y-3 rounded-xl border border-border bg-card p-5">
+      <div className="flex items-center gap-2">
+        <Bell className="h-4 w-4 text-muted-foreground" />
+        <h2 className="text-sm font-medium">Notifications</h2>
+      </div>
+
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-muted-foreground">Show notifications</span>
+        <div className="flex items-center gap-2">
+          <StatusPill state={status?.display ?? null} />
+          {status?.display !== "granted" && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={handleRequestPermission}>
+              Enable
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {isNative() && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">Exact-time alarms</span>
+          <div className="flex items-center gap-2">
+            <StatusPill state={status?.exactAlarms ?? null} />
+            {status?.exactAlarms !== "granted" && (
+              <Button size="sm" variant="outline" disabled={busy} onClick={handleRequestExactAlarm}>
+                Enable
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="pt-1">
+        <Button size="sm" disabled={busy || status?.display !== "granted"} onClick={handleTest}>
+          <BellRing className="mr-1.5 h-3.5 w-3.5" />
+          Send test notification
+        </Button>
+        {testSent && (
+          <p className="mt-1.5 text-xs text-primary">Sent — it'll arrive in ~5 seconds.</p>
+        )}
+      </div>
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
+      <p className="text-xs text-muted-foreground">
+        {isNative()
+          ? "On Android, exact-time alarms need a one-time approval on a system settings screen — enable it above so reminders and alarms fire on time."
+          : "In the browser, notifications only fire while this tab stays open. Install the Android app for reliable background notifications."}
+      </p>
+    </div>
+  );
+}
 
 function SettingsPage() {
   const { user, updatePassword } = useAuth();
@@ -145,6 +285,8 @@ function SettingsPage() {
             {submitting ? "Updating…" : "Update password"}
           </Button>
         </form>
+
+        <NotificationsPanel />
       </div>
     </div>
   );
