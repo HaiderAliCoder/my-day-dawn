@@ -3,6 +3,24 @@ import { CheckCircle2, Pause, Play, Square, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useFocusSessions, useMotivationalVideos, type FocusSession, type Task } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { CHANNELS, cancelNotifications, scheduleNotification } from "@/lib/notifications";
+
+/**
+ * Turns a session's uuid into a stable positive int for use as a
+ * notification id (the plugin requires a number, not a string). Doesn't
+ * need to be cryptographically anything — just needs to not collide across
+ * concurrently-scheduled ids, and a session id is unique per user already.
+ */
+function notificationIdForSession(sessionId: string): number {
+  let hash = 0;
+  for (let i = 0; i < sessionId.length; i++) {
+    hash = (hash * 31 + sessionId.charCodeAt(i)) | 0;
+  }
+  // Keep it comfortably clear of the 999999 test-notification id and always
+  // positive.
+  return 100000 + (Math.abs(hash) % 800000);
+}
+
 
 const PRESET_MINUTES = [15, 25, 50];
 const DEFAULT_MINUTES = 25;
@@ -144,6 +162,35 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
     finish(activeSession.id, true);
     notifyCompletion(`${formatDuration(sessionPlannedSeconds(activeSession))} session finished.`);
   }, [activeSession, isPaused, secondsLeft, finish]);
+
+  // Schedule a real OS-level notification for the moment this session ends,
+  // so completion still fires even if the app is closed/backgrounded (the
+  // `notifyCompletion()` call elsewhere only works while this component is
+  // alive and mounted, which isn't the case once Android suspends the
+  // WebView). Re-runs whenever the session is paused/resumed/replaced, so
+  // the scheduled time always tracks the true remaining duration. The
+  // cleanup cancels it — covering pause, early finish/cancel, and the
+  // session ending naturally (at which point the local completion effect
+  // above has already fired, so this is just preventing a duplicate).
+  useEffect(() => {
+    if (!activeSession || isPaused) return;
+    const id = notificationIdForSession(activeSession.id);
+    const planned = sessionPlannedSeconds(activeSession);
+    const endsAt = new Date(activeSession.startedAt + planned * 1000);
+    scheduleNotification({
+      id,
+      title: "Focus session complete",
+      body: `${formatDuration(planned)} session finished.`,
+      at: endsAt,
+      channel: CHANNELS.alarms,
+    }).catch(() => {
+      // Best-effort — sound/vibrate/tab-title still cover the foreground
+      // case if scheduling fails for any reason (e.g. permission revoked).
+    });
+    return () => {
+      cancelNotifications([id]).catch(() => {});
+    };
+  }, [activeSession?.id, activeSession?.startedAt, activeSession?.pausedAt, isPaused]);
 
   // Live tab-title countdown so the running timer is visible even when
   // you're glancing at another tab/window.
