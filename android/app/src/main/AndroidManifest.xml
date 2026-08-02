@@ -33,11 +33,27 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!-- Owns the live countdown notification for a running focus
+             session; started/stopped/paused from FocusTimerPlugin. -->
+        <service
+            android:name=".FocusTimerService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Shows a live countdown notification while a user-started focus/study timer is running" />
+        </service>
     </application>
 
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Required to run FocusTimerService as a foreground service (the
+         live focus-session countdown notification). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!-- Declared explicitly (in addition to the plugin's own manifest,
          which already includes this) so it's never dependent on manifest

@@ -3,24 +3,11 @@ import { CheckCircle2, Pause, Play, Square, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useFocusSessions, useMotivationalVideos, type FocusSession, type Task } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { CHANNELS, cancelNotifications, scheduleNotification } from "@/lib/notifications";
-
-/**
- * Turns a session's uuid into a stable positive int for use as a
- * notification id (the plugin requires a number, not a string). Doesn't
- * need to be cryptographically anything — just needs to not collide across
- * concurrently-scheduled ids, and a session id is unique per user already.
- */
-function notificationIdForSession(sessionId: string): number {
-  let hash = 0;
-  for (let i = 0; i < sessionId.length; i++) {
-    hash = (hash * 31 + sessionId.charCodeAt(i)) | 0;
-  }
-  // Keep it comfortably clear of the 999999 test-notification id and always
-  // positive.
-  return 100000 + (Math.abs(hash) % 800000);
-}
-
+import {
+  startFocusTimerNotification,
+  pauseFocusTimerNotification,
+  stopFocusTimerNotification,
+} from "@/lib/focus-timer-native";
 
 const PRESET_MINUTES = [15, 25, 50];
 const DEFAULT_MINUTES = 25;
@@ -163,46 +150,41 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
     notifyCompletion(`${formatDuration(sessionPlannedSeconds(activeSession))} session finished.`);
   }, [activeSession, isPaused, secondsLeft, finish]);
 
-  // Schedule a real OS-level notification for the moment this session ends,
-  // so completion still fires even if the app is closed/backgrounded (the
-  // `notifyCompletion()` call elsewhere only works while this component is
-  // alive and mounted, which isn't the case once Android suspends the
-  // WebView). Re-runs whenever the session is paused/resumed/replaced, so
-  // the scheduled time always tracks the true remaining duration. The
-  // cleanup cancels it — covering pause, early finish/cancel, and the
-  // session ending naturally (at which point the local completion effect
-  // above has already fired, so this is just preventing a duplicate).
+  // Drive the native foreground-service countdown notification (see
+  // FocusTimerService.java). This is the one piece that actually needs to
+  // survive the app being backgrounded/frozen — a foreground service isn't
+  // subject to the process freezing that made a plain scheduled
+  // notification unreliable, and it ticks/completes on its own internal
+  // clock, independent of this component or the WebView's JS thread. Runs
+  // whenever the session starts, resumes (startedAt shifts), or pauses;
+  // stops entirely once there's no active session (Done/Cancel/natural
+  // completion all funnel through activeSession becoming undefined).
   useEffect(() => {
-    if (!activeSession || isPaused) return;
-    const id = notificationIdForSession(activeSession.id);
+    if (!activeSession) {
+      stopFocusTimerNotification();
+      return;
+    }
+    if (isPaused) {
+      pauseFocusTimerNotification();
+      return;
+    }
     const planned = sessionPlannedSeconds(activeSession);
-    const endsAt = new Date(activeSession.startedAt + planned * 1000);
-    scheduleNotification({
-      id,
-      title: "Focus session complete",
-      body: `${formatDuration(planned)} session finished.`,
-      at: endsAt,
-      channel: CHANNELS.alarms,
-    }).catch(() => {
-      // Best-effort — sound/vibrate/tab-title still cover the foreground
-      // case if scheduling fails for any reason (e.g. permission revoked).
-    });
+    const endsAt = activeSession.startedAt + planned * 1000;
+    const activeTaskTitle = tasks.find((t) => t.id === activeSession.taskId)?.title;
+    startFocusTimerNotification(endsAt, activeTaskTitle ?? "Focus session");
+  }, [activeSession, isPaused, tasks]);
+
+  // Belt-and-suspenders: make sure the native notification is torn down if
+  // this component itself unmounts while a session is still active (e.g.
+  // navigating away doesn't affect it since state lives server-side, but
+  // this guards against any future navigation change that would unmount
+  // the widget entirely).
+  useEffect(() => {
     return () => {
-      // Only cancel if the app is visible right now. If we're backgrounded,
-      // this cleanup is very likely firing because the local JS timer
-      // finished the session on its own — Android keeps the WebView's JS
-      // alive for a while after you leave the app, so the on-screen
-      // countdown (and this effect's dependencies) can still update while
-      // hidden. In that case we must NOT cancel, or the one thing that can
-      // actually reach you while backgrounded — the real OS notification —
-      // gets pulled out from under itself moments before it would fire.
-      // Foreground cleanups (Pause, Done, Cancel, a natural finish while
-      // you're looking at the screen) are always safe to cancel, since
-      // the in-app UI already shows completion either way.
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      cancelNotifications([id]).catch(() => {});
+      if (!activeSession) stopFocusTimerNotification();
     };
-  }, [activeSession?.id, activeSession?.startedAt, activeSession?.pausedAt, isPaused]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Live tab-title countdown so the running timer is visible even when
   // you're glancing at another tab/window.
