@@ -16,6 +16,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { AppShell } from "@/components/app-shell";
 import { Toaster } from "@/components/ui/sonner";
+import { TimetableAlarmScheduler } from "@/components/timetable-alarm-scheduler";
 
 function NotFoundComponent() {
   return (
@@ -179,6 +180,7 @@ function AuthGate() {
 
   return (
     <AppShell>
+      <TimetableAlarmScheduler />
       <Outlet />
     </AppShell>
   );

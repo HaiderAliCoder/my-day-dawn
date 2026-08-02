@@ -44,6 +44,30 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Shows a live countdown notification while a user-started focus/study timer is running" />
         </service>
+
+        <!-- Plays the pulsed 10s-on/20s-off alarm for a scheduled timetable
+             entry; started by TimetableAlarmReceiver when its exact alarm
+             fires. -->
+        <service
+            android:name=".TimetableAlarmService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Plays an alarm for a user-scheduled timetable entry" />
+        </service>
+
+        <receiver
+            android:name=".TimetableAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".TimetableBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions -->
@@ -54,6 +78,10 @@
          live focus-session countdown notification). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Re-arms timetable alarms after the phone reboots, since
+         AlarmManager alarms don't survive a restart. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- FocusTimerService vibrates on completion; without this permission
          the vibrate() call throws SecurityException and crashes the app. -->
