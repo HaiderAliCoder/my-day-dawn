@@ -171,7 +171,7 @@ export function FocusSessionWidget({ tasks }: { tasks: Task[] }) {
     const planned = sessionPlannedSeconds(activeSession);
     const endsAt = activeSession.startedAt + planned * 1000;
     const activeTaskTitle = tasks.find((t) => t.id === activeSession.taskId)?.title;
-    startFocusTimerNotification(endsAt, activeTaskTitle ?? "Focus session");
+    startFocusTimerNotification(endsAt, activeTaskTitle ?? "Focus session", planned);
   }, [activeSession, isPaused, tasks]);
 
   // Belt-and-suspenders: make sure the native notification is torn down if

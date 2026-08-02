@@ -20,6 +20,7 @@ public class FocusTimerPlugin extends Plugin {
     public void start(PluginCall call) {
         Long endAt = call.getLong("endAt");
         String label = call.getString("label", "Focus session");
+        Integer totalSeconds = call.getInt("totalSeconds", 0);
         if (endAt == null) {
             call.reject("endAt is required");
             return;
@@ -28,6 +29,7 @@ public class FocusTimerPlugin extends Plugin {
         intent.setAction(FocusTimerService.ACTION_START);
         intent.putExtra(FocusTimerService.EXTRA_END_AT, endAt);
         intent.putExtra(FocusTimerService.EXTRA_LABEL, label);
+        intent.putExtra(FocusTimerService.EXTRA_TOTAL_SECONDS, totalSeconds != null ? totalSeconds.longValue() : 0L);
         // Only START must go through startForegroundService — Android
         // requires startForeground() to be called within 5s of that call,
         // and onStartCommand() only does so for ACTION_START. Using it for

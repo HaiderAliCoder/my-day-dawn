@@ -55,6 +55,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- FocusTimerService vibrates on completion; without this permission
+         the vibrate() call throws SecurityException and crashes the app. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- Declared explicitly (in addition to the plugin's own manifest,
          which already includes this) so it's never dependent on manifest
          merging succeeding — required on Android 13+ to show any

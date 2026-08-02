@@ -9,4 +9,16 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(FocusTimerPlugin.class);
         super.onCreate(savedInstanceState);
     }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        FocusTimerService.isAppVisible = true;
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        FocusTimerService.isAppVisible = false;
+    }
 }

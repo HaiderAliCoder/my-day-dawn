@@ -14,7 +14,7 @@ import { isNative } from "@/lib/notifications";
  * No-op on web / when not running as the installed native app.
  */
 interface FocusTimerNativePlugin {
-  start(options: { endAt: number; label: string }): Promise<void>;
+  start(options: { endAt: number; label: string; totalSeconds: number }): Promise<void>;
   pause(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -22,10 +22,14 @@ interface FocusTimerNativePlugin {
 const FocusTimerNative = registerPlugin<FocusTimerNativePlugin>("FocusTimer");
 
 /** Starts (or restarts, e.g. on resume) the live countdown notification. */
-export async function startFocusTimerNotification(endAt: number, label: string): Promise<void> {
+export async function startFocusTimerNotification(
+  endAt: number,
+  label: string,
+  totalSeconds: number
+): Promise<void> {
   if (!isNative()) return;
   try {
-    await FocusTimerNative.start({ endAt, label });
+    await FocusTimerNative.start({ endAt, label, totalSeconds });
   } catch {
     // Best-effort — in-app UI still shows the countdown regardless.
   }
