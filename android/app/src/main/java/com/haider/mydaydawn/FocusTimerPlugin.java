@@ -28,7 +28,18 @@ public class FocusTimerPlugin extends Plugin {
         intent.setAction(FocusTimerService.ACTION_START);
         intent.putExtra(FocusTimerService.EXTRA_END_AT, endAt);
         intent.putExtra(FocusTimerService.EXTRA_LABEL, label);
-        startService(intent);
+        // Only START must go through startForegroundService — Android
+        // requires startForeground() to be called within 5s of that call,
+        // and onStartCommand() only does so for ACTION_START. Using it for
+        // pause/stop too crashes the whole app with
+        // ForegroundServiceDidNotStartInTimeException, since those actions
+        // never call startForeground().
+        Context context = getContext();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
         call.resolve();
     }
 
@@ -36,7 +47,7 @@ public class FocusTimerPlugin extends Plugin {
     public void pause(PluginCall call) {
         Intent intent = new Intent(getContext(), FocusTimerService.class);
         intent.setAction(FocusTimerService.ACTION_PAUSE);
-        startService(intent);
+        getContext().startService(intent);
         call.resolve();
     }
 
@@ -44,16 +55,7 @@ public class FocusTimerPlugin extends Plugin {
     public void stop(PluginCall call) {
         Intent intent = new Intent(getContext(), FocusTimerService.class);
         intent.setAction(FocusTimerService.ACTION_STOP);
-        startService(intent);
+        getContext().startService(intent);
         call.resolve();
-    }
-
-    private void startService(Intent intent) {
-        Context context = getContext();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent);
-        } else {
-            context.startService(intent);
-        }
     }
 }
