@@ -1448,3 +1448,280 @@ function countTodayCompleted(sessions: FocusSession[]): number {
   const cutoff = today.getTime();
   return sessions.filter((s) => s.completed && s.startedAt >= cutoff).length;
 }
+
+// ---------------------------------------------------------------------------
+// Timetable — a recurring weekly schedule (timetable_weekly_blocks), plus
+// one-off date overrides (timetable_overrides) that take priority over the
+// weekly schedule only for the time range they overlap on their date. Every
+// other weekly block that day is untouched.
+// ---------------------------------------------------------------------------
+
+export interface TimetableWeeklyBlock {
+  id: string;
+  dayOfWeek: number; // 0 = Sunday .. 6 = Saturday
+  title: string;
+  startTime: string; // "HH:MM:SS"
+  endTime: string;
+  alarmEnabled: boolean;
+}
+
+export interface TimetableOverride {
+  id: string;
+  date: string; // "YYYY-MM-DD"
+  title: string;
+  startTime: string;
+  endTime: string;
+  alarmEnabled: boolean;
+}
+
+/** A single resolved entry for one calendar day, after merging overrides in. */
+export interface TimetableEntry {
+  id: string;
+  title: string;
+  startTime: string;
+  endTime: string;
+  alarmEnabled: boolean;
+  isOverride: boolean;
+}
+
+interface TimetableWeeklyBlockRow {
+  id: string;
+  day_of_week: number;
+  title: string;
+  start_time: string;
+  end_time: string;
+  alarm_enabled: boolean;
+}
+
+interface TimetableOverrideRow {
+  id: string;
+  override_date: string;
+  title: string;
+  start_time: string;
+  end_time: string;
+  alarm_enabled: boolean;
+}
+
+function weeklyBlockFromRow(r: TimetableWeeklyBlockRow): TimetableWeeklyBlock {
+  return {
+    id: r.id,
+    dayOfWeek: r.day_of_week,
+    title: r.title,
+    startTime: r.start_time,
+    endTime: r.end_time,
+    alarmEnabled: r.alarm_enabled,
+  };
+}
+
+function overrideFromRow(r: TimetableOverrideRow): TimetableOverride {
+  return {
+    id: r.id,
+    date: r.override_date,
+    title: r.title,
+    startTime: r.start_time,
+    endTime: r.end_time,
+    alarmEnabled: r.alarm_enabled,
+  };
+}
+
+/**
+ * Merges the recurring weekly schedule with that date's overrides. An
+ * override only replaces the portion of weekly blocks it time-overlaps —
+ * a weekly block entirely outside every override's range is kept as-is; one
+ * that partially overlaps is clipped to the non-overlapping remainder(s); one
+ * fully covered by an override is dropped.
+ */
+export function resolveTimetableForDate(
+  date: Date,
+  weeklyBlocks: TimetableWeeklyBlock[],
+  overrides: TimetableOverride[],
+): TimetableEntry[] {
+  const dayOfWeek = date.getDay();
+  const dateKey = toDateKey(date);
+  const dayOverrides = overrides
+    .filter((o) => o.date === dateKey)
+    .sort((a, b) => a.startTime.localeCompare(b.startTime));
+  const dayWeekly = weeklyBlocks.filter((b) => b.dayOfWeek === dayOfWeek);
+
+  const clipped: TimetableEntry[] = [];
+  for (const block of dayWeekly) {
+    // Start with the block's full range, then carve out every overlapping
+    // override, potentially splitting it into multiple remaining pieces.
+    let remaining: Array<[string, string]> = [[block.startTime, block.endTime]];
+    for (const ov of dayOverrides) {
+      const next: Array<[string, string]> = [];
+      for (const [s, e] of remaining) {
+        if (ov.endTime <= s || ov.startTime >= e) {
+          // No overlap with this override — keep the piece whole.
+          next.push([s, e]);
+          continue;
+        }
+        if (ov.startTime > s) next.push([s, ov.startTime]);
+        if (ov.endTime < e) next.push([ov.endTime, e]);
+      }
+      remaining = next;
+    }
+    for (const [s, e] of remaining) {
+      clipped.push({
+        id: `${block.id}:${s}`,
+        title: block.title,
+        startTime: s,
+        endTime: e,
+        alarmEnabled: block.alarmEnabled,
+        isOverride: false,
+      });
+    }
+  }
+
+  const overrideEntries: TimetableEntry[] = dayOverrides.map((o) => ({
+    id: o.id,
+    title: o.title,
+    startTime: o.startTime,
+    endTime: o.endTime,
+    alarmEnabled: o.alarmEnabled,
+    isOverride: true,
+  }));
+
+  return [...clipped, ...overrideEntries].sort((a, b) => a.startTime.localeCompare(b.startTime));
+}
+
+function toDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export function useTimetable() {
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
+  const weeklyKey = ["timetable_weekly_blocks", userId] as const;
+  const overridesKey = ["timetable_overrides", userId] as const;
+
+  const weeklyQuery = useQuery({
+    queryKey: weeklyKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<TimetableWeeklyBlock[]> => {
+      const { data, error } = await supabase
+        .from("timetable_weekly_blocks")
+        .select("*")
+        .order("day_of_week")
+        .order("start_time");
+      if (error) throw error;
+      return (data as TimetableWeeklyBlockRow[]).map(weeklyBlockFromRow);
+    },
+  });
+
+  const overridesQuery = useQuery({
+    queryKey: overridesKey,
+    enabled: !!userId,
+    queryFn: async (): Promise<TimetableOverride[]> => {
+      const { data, error } = await supabase
+        .from("timetable_overrides")
+        .select("*")
+        .order("override_date")
+        .order("start_time");
+      if (error) throw error;
+      return (data as TimetableOverrideRow[]).map(overrideFromRow);
+    },
+  });
+
+  const weeklyBlocks = weeklyQuery.data ?? [];
+  const overrides = overridesQuery.data ?? [];
+
+  const addWeeklyMutation = useMutation({
+    mutationFn: async (b: Omit<TimetableWeeklyBlock, "id">) => {
+      const { error } = await supabase.from("timetable_weekly_blocks").insert({
+        user_id: userId,
+        day_of_week: b.dayOfWeek,
+        title: b.title,
+        start_time: b.startTime,
+        end_time: b.endTime,
+        alarm_enabled: b.alarmEnabled,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: weeklyKey }),
+  });
+
+  const updateWeeklyMutation = useMutation({
+    mutationFn: async ({ id, ...b }: Partial<TimetableWeeklyBlock> & { id: string }) => {
+      const patch: Record<string, unknown> = {};
+      if (b.dayOfWeek !== undefined) patch.day_of_week = b.dayOfWeek;
+      if (b.title !== undefined) patch.title = b.title;
+      if (b.startTime !== undefined) patch.start_time = b.startTime;
+      if (b.endTime !== undefined) patch.end_time = b.endTime;
+      if (b.alarmEnabled !== undefined) patch.alarm_enabled = b.alarmEnabled;
+      const { error } = await supabase.from("timetable_weekly_blocks").update(patch).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: weeklyKey }),
+  });
+
+  const removeWeeklyMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("timetable_weekly_blocks").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) =>
+      queryClient.setQueryData<TimetableWeeklyBlock[]>(weeklyKey, (old) =>
+        (old ?? []).filter((b) => b.id !== id),
+      ),
+  });
+
+  const addOverrideMutation = useMutation({
+    mutationFn: async (o: Omit<TimetableOverride, "id">) => {
+      const { error } = await supabase.from("timetable_overrides").insert({
+        user_id: userId,
+        override_date: o.date,
+        title: o.title,
+        start_time: o.startTime,
+        end_time: o.endTime,
+        alarm_enabled: o.alarmEnabled,
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: overridesKey }),
+  });
+
+  const updateOverrideMutation = useMutation({
+    mutationFn: async ({ id, ...o }: Partial<TimetableOverride> & { id: string }) => {
+      const patch: Record<string, unknown> = {};
+      if (o.date !== undefined) patch.override_date = o.date;
+      if (o.title !== undefined) patch.title = o.title;
+      if (o.startTime !== undefined) patch.start_time = o.startTime;
+      if (o.endTime !== undefined) patch.end_time = o.endTime;
+      if (o.alarmEnabled !== undefined) patch.alarm_enabled = o.alarmEnabled;
+      const { error } = await supabase.from("timetable_overrides").update(patch).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: overridesKey }),
+  });
+
+  const removeOverrideMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("timetable_overrides").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onMutate: async (id) =>
+      queryClient.setQueryData<TimetableOverride[]>(overridesKey, (old) =>
+        (old ?? []).filter((o) => o.id !== id),
+      ),
+  });
+
+  return {
+    weeklyBlocks,
+    overrides,
+    addWeeklyBlock: (b: Omit<TimetableWeeklyBlock, "id">) => addWeeklyMutation.mutateAsync(b),
+    updateWeeklyBlock: (b: Partial<TimetableWeeklyBlock> & { id: string }) =>
+      updateWeeklyMutation.mutateAsync(b),
+    removeWeeklyBlock: (id: string) => removeWeeklyMutation.mutate(id),
+    addOverride: (o: Omit<TimetableOverride, "id">) => addOverrideMutation.mutateAsync(o),
+    updateOverride: (o: Partial<TimetableOverride> & { id: string }) =>
+      updateOverrideMutation.mutateAsync(o),
+    removeOverride: (id: string) => removeOverrideMutation.mutate(id),
+    forDate: (date: Date) => resolveTimetableForDate(date, weeklyBlocks, overrides),
+  };
+}
+
